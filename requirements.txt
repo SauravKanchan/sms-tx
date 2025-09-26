@@ -1,0 +1,28 @@
+# Core Flask and Web framework
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Blockchain integration
+web3>=6.11.0
+eth-account>=0.9.0
+
+# Core cryptographic libraries
+coincurve>=18.0.0          # secp256k1 elliptic curve operations
+eth-utils>=2.3.0           # Ethereum utilities (keccak256)
+eth-keys>=0.5.0            # Ethereum key management
+pycryptodome>=3.6.6        # Cryptographic primitives (required by eth-hash)
+
+# HTTP requests
+requests>=2.31.0
+
+# Testing framework
+pytest>=8.0.0             # Testing framework
+
+# Production TSS dependencies
+typing-extensions>=4.0.0   # Enhanced type hints for security modules
+
+# Development
+python-dotenv>=1.0.0
