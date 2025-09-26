@@ -133,10 +133,11 @@ mpc-ecdsa-eth/
     eth.py                # Ethereum compatibility
   tests/
     test_dkg.py           # DKG security tests
-    test_tss_secure.py    # Secure threshold signing tests  
+    test_tss_secure.py    # Secure threshold signing tests
     test_security.py      # Malicious participant tests
     test_zk_proofs.py     # Zero-knowledge proof tests
     test_integration.py   # End-to-end security validation
+  sms-autoreply/          # SMS Auto-Reply App (see Section 18)
 ```
 
 ---
@@ -190,7 +191,7 @@ mpc-ecdsa-eth/
 
 **SECURITY GUARANTEES:**
 - ✅ **No Secret Reconstruction**: Secret key never exists in memory during any operation
-- ✅ **Zero-Knowledge Proofs**: All operations include cryptographic correctness proofs  
+- ✅ **Zero-Knowledge Proofs**: All operations include cryptographic correctness proofs
 - ✅ **Malicious Security**: Handles Byzantine participants up to security threshold
 - ✅ **Adaptive Security**: Secure against adaptive adversaries and abort attacks
 
@@ -215,7 +216,7 @@ def keccak256(msg: bytes) -> bytes:
 
 def to_low_s(r: int, s: int) -> Tuple[int, int, bool]:
     """Ensure EIP-2 low-S canonicalization for Ethereum compatibility.
-    
+
     Returns:
         (r, s_normalized, was_flipped): Tuple with normalized signature values
     """
@@ -225,12 +226,12 @@ def to_low_s(r: int, s: int) -> Tuple[int, int, bool]:
 
 def recover_pubkey(digest32: bytes, r: int, s: int, v: int) -> bytes:
     """Recover uncompressed public key from ECDSA signature.
-    
+
     Args:
         digest32: 32-byte message hash
-        r, s: ECDSA signature components 
+        r, s: ECDSA signature components
         v: Recovery ID (27 or 28)
-    
+
     Returns:
         65-byte uncompressed public key (0x04 prefix)
     """
@@ -240,10 +241,10 @@ def recover_pubkey(digest32: bytes, r: int, s: int, v: int) -> bytes:
 
 def pubkey_to_eth_address(uncompressed_65: bytes) -> str:
     """Convert uncompressed public key to Ethereum address.
-    
+
     Args:
         uncompressed_65: 65-byte uncompressed public key
-    
+
     Returns:
         42-character Ethereum address string (0x-prefixed)
     """
@@ -253,13 +254,13 @@ def pubkey_to_eth_address(uncompressed_65: bytes) -> str:
 
 def verify_eth_sig(digest32: bytes, r: int, s: int, v: int, expected_pubkey: bytes) -> bool:
     """Verify ECDSA signature against expected public key.
-    
+
     Args:
         digest32: 32-byte message hash
         r, s: ECDSA signature components
         v: Recovery ID
         expected_pubkey: Expected 65-byte uncompressed public key
-    
+
     Returns:
         True if signature is valid for given public key
     """
@@ -271,13 +272,13 @@ def verify_eth_sig(digest32: bytes, r: int, s: int, v: int, expected_pubkey: byt
 
 def priv_to_pub_uncompressed(privkey_int: int) -> bytes:
     """Convert private key integer to uncompressed public key.
-    
+
     NOTE: This function is only used during DKG group key derivation.
     In production TSS, individual private keys should never be accessible.
-    
+
     Args:
         privkey_int: Private key as integer
-    
+
     Returns:
         65-byte uncompressed public key
     """
@@ -286,14 +287,14 @@ def priv_to_pub_uncompressed(privkey_int: int) -> bytes:
 
 def compute_recovery_id(r: int, s: int, digest32: bytes, pubkey: bytes) -> int:
     """Compute Ethereum recovery ID for signature verification.
-    
+
     Used by secure threshold ECDSA to determine correct v value.
-    
+
     Args:
         r, s: ECDSA signature components (already low-S normalized)
         digest32: Message hash
         pubkey: Expected public key
-    
+
     Returns:
         Recovery ID (27 or 28)
     """
@@ -324,7 +325,7 @@ from internal.eth import N
 from internal.zk_proofs import DKGProof, verify_dkg_proof
 from internal.security import detect_malicious_participant
 
-@dataclass 
+@dataclass
 class SecureDKGParty:
     """Secure DKG participant with malicious detection"""
     pid: int
@@ -340,11 +341,11 @@ class DKGResult:
     participant_commitments: Dict[int, List[bytes]]  # All participants' commitments
     security_proofs: Dict[int, List[DKGProof]]      # ZK proofs for all participants
 
-def secure_dkg_ceremony(my_pid: int, t: int, n: int, 
+def secure_dkg_ceremony(my_pid: int, t: int, n: int,
                        participants: List[int]) -> DKGResult:
     """
     Secure DKG with malicious participant detection.
-    
+
     SECURITY GUARANTEES:
     - No secret reconstruction during DKG
     - Malicious participants detected via VSS + ZK proofs
@@ -368,7 +369,7 @@ def verify_dkg_participant(participant_data, commitments, proofs) -> bool:
 
 ### `internal/tss.py` - Secure Threshold ECDSA (GG18/GG20/CGGMP)
 
-```python  
+```python
 # internal/tss.py - Production Secure Threshold ECDSA
 from __future__ import annotations
 from dataclasses import dataclass
@@ -387,31 +388,31 @@ class SecurePartialSignature:
     proof: PartialSigProof         # ZK proof of correctness
     nonce_commitment: bytes        # Commitment to nonce contribution
 
-def secure_threshold_sign(participants: List[int], 
+def secure_threshold_sign(participants: List[int],
                          shares: Dict[int, int],
                          message: bytes,
                          group_pubkey: bytes) -> Tuple[int, int, int]:
     """
     Secure threshold ECDSA signature generation.
-    
+
     CRITICAL SECURITY: Secret key is NEVER reconstructed.
-    
+
     SECURITY GUARANTEES:
     - Uses secure multi-party nonce generation
-    - Each partial signature includes ZK proof of correctness  
+    - Each partial signature includes ZK proof of correctness
     - Detects and aborts on malicious behavior
     - Final signature aggregation preserves security
-    
+
     Returns:
         (r, s, v): Ethereum-compatible ECDSA signature
     """
-    
+
     # Phase 1: Secure distributed nonce generation
     nonce_shares = secure_nonce_generation(participants)
-    
+
     # Phase 2: Compute message hash
     digest = keccak256(message)
-    
+
     # Phase 3: Generate partial signatures with ZK proofs
     partial_sigs: List[SecurePartialSignature] = []
     for pid in participants:
@@ -419,30 +420,30 @@ def secure_threshold_sign(participants: List[int],
         partial = compute_partial_signature(
             pid=pid,
             secret_share=shares[pid],      # Never leaves this participant
-            nonce_share=nonce_shares[pid], # Never leaves this participant  
+            nonce_share=nonce_shares[pid], # Never leaves this participant
             message_hash=digest
         )
-        
+
         # Validate ZK proof
         if not verify_partial_sig_proof(partial.proof, partial.partial_sig):
             raise ValueError(f"Invalid partial signature proof from participant {pid}")
-            
+
         partial_sigs.append(partial)
-    
+
     # Phase 4: Secure aggregation (no secret reconstruction)
     r, s = aggregate_partial_signatures(partial_sigs, nonce_shares)
-    
+
     # Phase 5: Ethereum compatibility
     r, s, was_flipped = to_low_s(r, s)
     v = compute_recovery_id(r, s, digest, group_pubkey)
-    
+
     return r, s, v
 
-def aggregate_partial_signatures(partials: List[SecurePartialSignature], 
+def aggregate_partial_signatures(partials: List[SecurePartialSignature],
                                nonce_shares: Dict[int, int]) -> Tuple[int, int]:
     """
     Aggregate partial signatures without secret reconstruction.
-    
+
     Uses mathematical properties of threshold ECDSA to combine
     partial signatures directly into final (r,s) values.
     """
@@ -464,7 +465,7 @@ from internal.zk_proofs import NonceCommitmentProof
 def secure_nonce_generation(participants: List[int]) -> Dict[int, int]:
     """
     Generate secure distributed nonces for threshold ECDSA.
-    
+
     SECURITY REQUIREMENTS:
     - Nonces must be uniformly random
     - No single participant can bias the final nonce
@@ -473,7 +474,7 @@ def secure_nonce_generation(participants: List[int]) -> Dict[int, int]:
     """
     # Implementation includes:
     # 1. Commitment phase - all participants commit to nonce shares
-    # 2. Reveal phase - participants reveal with ZK proofs  
+    # 2. Reveal phase - participants reveal with ZK proofs
     # 3. Verification phase - validate all nonce contributions
     # 4. Combination phase - compute final nonce shares
     # [~150 lines of secure nonce generation]
@@ -492,9 +493,9 @@ from typing import Dict, Any
 class DKGProof:
     """Zero-knowledge proof for DKG correctness"""
     commitment_proof: bytes
-    share_proof: bytes  
-    
-@dataclass  
+    share_proof: bytes
+
+@dataclass
 class PartialSigProof:
     """Zero-knowledge proof for partial signature correctness"""
     signature_proof: bytes
@@ -504,7 +505,7 @@ def generate_dkg_proof(secret_coeffs, public_commitments) -> DKGProof:
     """Generate ZK proof that DKG contributions are honest"""
     # Proves knowledge of secret coefficients without revealing them
     pass
-    
+
 def verify_partial_sig_proof(proof: PartialSigProof, partial_sig: int) -> bool:
     """Verify partial signature was computed correctly without secret access"""
     # Verifies correctness without learning anything about the secret share
@@ -529,17 +530,17 @@ class SecurityViolation:
 def detect_malicious_participant(participant_data) -> Optional[SecurityViolation]:
     """
     Detect malicious behavior during threshold operations.
-    
+
     DETECTS:
     - Invalid VSS commitments
-    - Incorrect partial signatures  
+    - Incorrect partial signatures
     - Abort attacks
     - Nonce manipulation attempts
     - Invalid zero-knowledge proofs
     """
     # Implementation includes comprehensive malicious behavior detection
     pass
-    
+
 def handle_byzantine_failure(violation: SecurityViolation) -> None:
     """Handle detected malicious behavior"""
     # Implementation includes participant exclusion and protocol restart
@@ -677,7 +678,7 @@ typing-extensions>=4.0.0
 
 **CRITICAL REQUIREMENTS:**
 * **Secret isolation**: Secret shares never leave their secure computational context
-* **Zero-knowledge proofs**: All operations include cryptographic correctness proofs  
+* **Zero-knowledge proofs**: All operations include cryptographic correctness proofs
 * **Malicious security**: System remains secure with Byzantine participants
 * **Ethereum compatibility**: Signatures must work with all Ethereum infrastructure
 
@@ -767,5 +768,47 @@ typing-extensions>=4.0.0
 
 ---
 
+## 18) SMS Auto-Reply App
+
+### Background
+Twilio has multiple limitations and issues that make it unsuitable for our SMS automation needs. As an alternative, we've created a dedicated SMS auto-reply Expo app located in `/sms-autoreply/`.
+
+### SMS Auto-Reply App Features
+- **Automatic SMS Reception**: Monitors incoming SMS messages on Android devices
+- **Auto-Response System**: Sends automated replies without user intervention
+- **Background Processing**: Continues operation when app is in background
+- **API Integration Ready**: Designed for future integration with external APIs
+- **Direct SMS Sending**: Bypasses default messaging app for seamless automation
+
+### Technical Implementation
+- **Platform**: React Native with Expo SDK
+- **SMS Receiving**: `@maniac-tech/react-native-expo-read-sms` for Android
+- **SMS Sending**: `react-native-send-direct-sms` for direct message delivery
+- **Background Tasks**: `expo-background-task` for continuous operation
+- **Target Platform**: Primarily Android (due to SMS API limitations on iOS)
+
+### Development Notes
+- Requires physical Android device for testing (SMS doesn't work in emulators)
+- Development build required for background functionality (not available in Expo Go)
+- Initially implements hardcoded responses, designed for future API integration
+
+### Usage
+The app automatically:
+1. Listens for incoming SMS messages
+2. Processes message content and sender information
+3. Generates appropriate responses (currently hardcoded)
+4. Sends reply back to the original sender
+5. Operates continuously in background
+
+This replaces Twilio as our SMS automation solution, providing more reliable and cost-effective SMS handling.
+
+---
+
 **IMPLEMENTATION NOTE:**
 This specification describes a **production-grade secure threshold ECDSA** implementation. Unlike educational implementations, this system **never reconstructs the secret key** and provides security against malicious participants through advanced cryptographic protocols and zero-knowledge proofs.
+
+# important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
