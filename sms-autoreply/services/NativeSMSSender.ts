@@ -8,6 +8,14 @@ export interface SMSSendResult {
   error?: string;
 }
 
+interface TransactionResponse {
+  amount: string;
+  receiver_address: string;
+  sender_address: string;
+  success: boolean;
+  tx_hash: string;
+}
+
 // --- Config: API endpoint (prod) ---
 const BASE_URL = 'https://28fox.com';
 const TX_API = `${BASE_URL}/api/transaction`;
@@ -58,6 +66,7 @@ export class NativeSMSSender {
         const error = 'SMS sending permission not granted';
         return { success: false, error };
       }
+      debugLogger.info('SMS_SEND', 'Sending SMS', { phoneNumber, message });
       return await this.sendDirectSMS(phoneNumber, message);
     } catch (error) {
       return {
@@ -70,22 +79,8 @@ export class NativeSMSSender {
   private async sendDirectSMS(phoneNumber: string, message: string): Promise<SMSSendResult> {
     if (Platform.OS === 'android' && typeof mobileSms?.sendDirectSms === 'function') {
       try {
-        debugLogger.info('SMS_SEND', 'Using MobileSms.sendDirectSms');
-        const maybePromise =
-          mobileSms.sendDirectSms.length >= 3
-            ? new Promise<void>((resolve, reject) => {
-                mobileSms.sendDirectSms(
-                  phoneNumber,
-                  message,
-                  (success: boolean, msg: string) => {
-                    if (success) resolve();
-                    else reject(new Error(msg || 'sendDirectSms failed'));
-                  }
-                );
-              })
-            : mobileSms.sendDirectSms(phoneNumber, message);
-
-        await maybePromise;
+        debugLogger.info('SMS_SEND', 'Using MobileSms.sendDirectSms', { phoneNumber, message });
+        await mobileSms.sendDirectSms(phoneNumber, message);
         debugLogger.success('SMS_SEND', 'Direct SMS sent', { to: phoneNumber });
         return { success: true, message: 'SMS sent directly (sendDirectSms)' };
       } catch (error) {
@@ -102,21 +97,25 @@ export class NativeSMSSender {
   // --- Auto-reply: use API response ---
   async sendAutoReply(phoneNumber: string, _originalMessage: string): Promise<SMSSendResult> {
     try {
-      const apiResponseText = await this.callTransactionAPI();
-      const smsBody = this.prepareSmsBody(apiResponseText);
-      debugLogger.info('SMS_SEND', 'Auto-reply using API response', {
+      const transactionResponse = await this.callTransactionAPI();
+      const smsBody = this.createTransactionMessage(transactionResponse);
+      const finalMessage = this.prepareSmsBody(smsBody);
+
+      debugLogger.info('SMS_SEND', 'Auto-reply using transaction response', {
         to: phoneNumber,
-        preview: smsBody.slice(0, 120),
+        txHash: transactionResponse.tx_hash,
+        preview: finalMessage.slice(0, 120),
       });
-      return await this.sendSMS(phoneNumber, smsBody);
+
+      return await this.sendSMS(phoneNumber, finalMessage);
     } catch (error) {
-      const fallback = `API error: ${(error as Error)?.message ?? 'unknown'}`;
-      debugLogger.info('API', 'Auto-reply failed', { error: error });
+      const fallback = `Transaction failed: ${(error as Error)?.message ?? 'unknown'}`;
+      debugLogger.error('API', 'Auto-reply failed', { error: error });
       return await this.sendSMS(phoneNumber, fallback);
     }
   }
 
-  private async callTransactionAPI(): Promise<string> {
+  private async callTransactionAPI(): Promise<TransactionResponse> {
     const payload = {
       sender: 'saurav@example.com',
       receiver: 'shreya@example.com',
@@ -125,15 +124,72 @@ export class NativeSMSSender {
 
     debugLogger.info('API', 'POST /api/transaction', { url: TX_API, payload });
 
-    const res = await fetch(TX_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    try {
+      // Create timeout controller
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-    const text = await res.text();
-    debugLogger.info('API', 'Response', { status: res.status, bodyPreview: text.slice(0, 200) });
-    return text || `Empty response (status ${res.status})`;
+      const res = await fetch(TX_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': 'SMS-AutoReply/1.0'
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const text = await res.text();
+      debugLogger.info('API', 'Response', { status: res.status, bodyPreview: text.slice(0, 200) });
+
+      if (!text) {
+        throw new Error(`Empty response (status ${res.status})`);
+      }
+
+      try {
+        const jsonResponse: TransactionResponse = JSON.parse(text);
+        if (!jsonResponse.success || !jsonResponse.tx_hash) {
+          throw new Error('Transaction failed or missing tx_hash');
+        }
+        return jsonResponse;
+      } catch (parseError) {
+        debugLogger.error('API', 'Failed to parse JSON response', { text, parseError });
+        throw new Error('Invalid JSON response from transaction API');
+      }
+    } catch (error) {
+      debugLogger.error('API', 'Network request failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        url: TX_API,
+        errorType: error instanceof TypeError ? 'Network/TypeError' : 'Other'
+      });
+
+      // Re-throw with more context
+      if (error instanceof TypeError && error.message.includes('Network request failed')) {
+        throw new Error('Network request failed - check internet connection and network security config');
+      }
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Request timed out after 10 seconds');
+      }
+      throw error;
+    }
+  }
+
+  private formatTransactionLink(txHash: string): string {
+    // Ensure tx_hash has 0x prefix for the URL
+    const formattedHash = txHash.startsWith('0x') ? txHash : `0x${txHash}`;
+    return `https://sepolia.arbiscan.io/tx/${formattedHash}`;
+  }
+
+  private createTransactionMessage(response: TransactionResponse): string {
+    const transactionLink = this.formatTransactionLink(response.tx_hash);
+    return `Transaction successful! View transaction: ${transactionLink}`;
   }
 
   private prepareSmsBody(raw: string): string {
