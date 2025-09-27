@@ -13,9 +13,12 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "background-processing",
+          "background-fetch",
+          "background-processing",
           "background-fetch"
         ]
-      }
+      },
+      "bundleIdentifier": "com.sauravnk30.smsautoreply"
     },
     "android": {
       "adaptiveIcon": {

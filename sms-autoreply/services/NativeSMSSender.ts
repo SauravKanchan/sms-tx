@@ -61,13 +61,34 @@ export class NativeSMSSender {
 
   async sendSMS(phoneNumber: string, message: string): Promise<SMSSendResult> {
     try {
+      // Validate phone number before processing
+      const phoneValidation = PhoneUtils.validateAndFormatPhone(phoneNumber, 'target');
+      if (!phoneValidation.isValid) {
+        debugLogger.error('SMS_SEND', 'Invalid phone number for SMS', {
+          phoneNumber,
+          error: phoneValidation.error
+        });
+        return {
+          success: false,
+          error: `Invalid phone number: ${phoneValidation.error}`
+        };
+      }
+
+      const validatedPhone = phoneValidation.formattedNumber!;
+
       const hasPermission = await this.checkSMSPermissions();
       if (!hasPermission) {
         const error = 'SMS sending permission not granted';
         return { success: false, error };
       }
-      debugLogger.info('SMS_SEND', 'Sending SMS', { phoneNumber, message });
-      return await this.sendDirectSMS(phoneNumber, message);
+
+      debugLogger.info('SMS_SEND', 'Sending SMS', {
+        originalPhone: phoneNumber,
+        validatedPhone,
+        messagePreview: message.slice(0, 50)
+      });
+
+      return await this.sendDirectSMS(validatedPhone, message);
     } catch (error) {
       return {
         success: false,
@@ -123,25 +144,58 @@ export class NativeSMSSender {
 
       // Check if this is a transaction response
       if (this.isTransactionResponse(aiResponse)) {
-        debugLogger.info('SMS_SEND', 'Transaction detected - sending dual SMS', {
+        debugLogger.info('SMS_SEND', 'Transaction detected - validating phone numbers', {
           from: aiResponse.from,
           to: aiResponse.to,
           amount: aiResponse.amount,
           transactionLink: aiResponse.data
         });
 
+        // Validate transaction phone numbers
+        const phoneValidation = PhoneUtils.validateTransactionPhones(
+          aiResponse.from!,
+          aiResponse.to!
+        );
+
+        if (!phoneValidation.isValid) {
+          const errorMsg = `Invalid transaction phone numbers: ${phoneValidation.errors.join(', ')}`;
+          debugLogger.error('SMS_SEND', 'Transaction phone validation failed', {
+            from: aiResponse.from,
+            to: aiResponse.to,
+            errors: phoneValidation.errors
+          });
+
+          // Send error message to original sender
+          const errorResponse = 'Transaction failed: Invalid phone numbers provided. Please ensure both sender and recipient numbers are valid 10-digit Indian mobile numbers.';
+          return await this.sendSMS(phoneNumber, errorResponse);
+        }
+
+        // Use validated phone numbers
+        const validatedFrom = phoneValidation.formattedFrom!;
+        const validatedTo = phoneValidation.formattedTo!;
+
+        debugLogger.info('SMS_SEND', 'Phone validation successful - proceeding with transaction', {
+          originalFrom: aiResponse.from,
+          originalTo: aiResponse.to,
+          validatedFrom,
+          validatedTo,
+          amount: aiResponse.amount
+        });
+
         // Send notification to recipient
         const recipientMessage = this.createRecipientNotification(aiResponse.amount!);
-        const recipientResult = await this.sendSMS(aiResponse.to!, recipientMessage);
+        const recipientResult = await this.sendSMS(validatedTo, recipientMessage);
 
         if (!recipientResult.success) {
           debugLogger.error('SMS_SEND', 'Failed to send recipient notification', {
-            to: aiResponse.to,
+            to: validatedTo,
+            originalTo: aiResponse.to,
             error: recipientResult.error
           });
         } else {
           debugLogger.success('SMS_SEND', 'Recipient notification sent', {
-            to: aiResponse.to,
+            to: validatedTo,
+            originalTo: aiResponse.to,
             message: recipientMessage
           });
         }
@@ -153,7 +207,8 @@ export class NativeSMSSender {
         debugLogger.info('SMS_SEND', 'Transaction SMS responses completed', {
           senderSuccess: senderResult.success,
           recipientSuccess: recipientResult.success,
-          senderMessage: senderMessage.slice(0, 120)
+          senderMessage: senderMessage.slice(0, 120),
+          validatedPhones: { from: validatedFrom, to: validatedTo }
         });
 
         return senderResult; // Return sender result as primary response
@@ -265,7 +320,18 @@ export class NativeSMSSender {
   }
 
   private isTransactionResponse(response: AIAPIResponse): boolean {
-    return !!(response.from && response.to && response.amount);
+    const hasRequiredFields = !!(response.from && response.to && response.amount);
+
+    if (hasRequiredFields) {
+      debugLogger.info('SMS_SEND', 'Detected transaction response', {
+        from: response.from,
+        to: response.to,
+        amount: response.amount,
+        hasData: !!response.data
+      });
+    }
+
+    return hasRequiredFields;
   }
 
   private createRecipientNotification(amount: string): string {

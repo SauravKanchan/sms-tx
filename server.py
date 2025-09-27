@@ -13,6 +13,7 @@ from services.dkg_service import DKGService
 from services.signing_service import SigningService
 from services.blockchain_service import BlockchainService
 from utils.action_handlers import handle_get_address, handle_transaction
+from utils.phone_validator import validate_transaction_phones, validate_phone_number
 from asi1.asi1_client import ASI1Client, load_prompt_template
 
 # Configure logging
@@ -258,7 +259,31 @@ def handle_ai_message():
                     'error': 'Missing transaction parameters in intent'
                 }), 400
 
-            result = handle_transaction(from_phone, to_phone, amount, signing_service)
+            # Validate phone numbers before processing transaction
+            logger.info(f"Validating transaction phone numbers: from={from_phone}, to={to_phone}")
+
+            phone_validation = validate_transaction_phones(from_phone, to_phone)
+
+            if not phone_validation.is_valid:
+                error_msg = f"Invalid phone numbers: {', '.join(phone_validation.errors)}"
+                logger.warning(f"Transaction rejected due to invalid phone numbers: {error_msg}")
+                return jsonify({
+                    'success': False,
+                    'error': error_msg
+                }), 400
+
+            # Use validated phone numbers for transaction
+            validated_from = phone_validation.formatted_from
+            validated_to = phone_validation.formatted_to
+
+            logger.info(f"Phone validation successful - proceeding with transaction: {validated_from} -> {validated_to}")
+
+            result = handle_transaction(validated_from, validated_to, amount, signing_service)
+
+            # If transaction was successful, ensure the response includes the validated phone numbers
+            if result.get('success') and isinstance(result, dict):
+                result['from'] = validated_from
+                result['to'] = validated_to
 
         elif intent_type == 'unknown':
             reason = intent.get('reason', 'Unable to understand the message')
