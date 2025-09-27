@@ -1,4 +1,6 @@
-<img src="logo.png" alt="SmsTx Logo" width="100" height="100">
+<div align="center">
+<img src="logo.png" alt="SmsTx Logo" width="200" height="200">
+</div>
 
 # SmsTx - SMS-Only Crypto Wallet with Threshold Cryptography
 
