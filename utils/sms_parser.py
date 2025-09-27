@@ -41,7 +41,7 @@ def parse_sms_fallback(text: str) -> Dict[str, Union[str, int, float]]:
     sender = sender_digits[-10:]
 
     # Check for balance keyword first (high priority)
-    balance_match = re.search(r'\bbalance\b', message, re.IGNORECASE)
+    balance_match = re.search(r'\bbalances?\b', message, re.IGNORECASE)
     if balance_match:
         logger.info(f"Balance keyword detected - treating as get-balance for {sender}")
         return {"type": "get-balance", "user": sender}
