@@ -1,6 +1,7 @@
-import * as SMS from 'expo-sms';
-import { Platform, Linking } from 'react-native';
+// NativeSMSSender.ts
+import { Platform, PermissionsAndroid } from 'react-native';
 import { debugLogger } from './DebugLogger';
+import * as SMS from 'expo-sms';
 
 export interface SMSSendResult {
   success: boolean;
@@ -8,16 +9,54 @@ export interface SMSSendResult {
   error?: string;
 }
 
+// --- Robust dynamic import for react-native-mobile-sms ---
+let mobileSms: any = null;
+try {
+  const lib = require('react-native-mobile-sms');
+  // Try common export shapes: named `MobileSms`, default export, or root.
+  mobileSms = lib?.MobileSms ?? lib?.default ?? lib;
+
+  debugLogger.info('SMS_SEND', 'react-native-mobile-sms loaded', {
+    type: typeof mobileSms,
+    keys: mobileSms ? Object.keys(mobileSms) : 'null',
+    hasSendDirectSms: !!mobileSms?.sendDirectSms,
+    hasSend: !!mobileSms?.send,
+  });
+} catch (error) {
+  debugLogger.warning(
+    'SMS_SEND',
+    'react-native-mobile-sms not available, will use Expo SMS fallback',
+    error
+  );
+}
+
 export class NativeSMSSender {
-  async checkSMSAvailability(): Promise<boolean> {
+  async checkSMSPermissions(): Promise<boolean> {
     try {
-      debugLogger.info('PERMISSION', 'Checking SMS availability...');
-      const isAvailable = await SMS.isAvailableAsync();
-      debugLogger.success('PERMISSION', `SMS availability: ${isAvailable}`);
-      return isAvailable;
+      debugLogger.info('PERMISSION', 'Checking SMS sending permissions...');
+
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.SEND_SMS,
+          {
+            title: 'SMS Permission',
+            message: 'This app needs SMS permission to send automatic replies',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          }
+        );
+
+        const hasPermission = granted === PermissionsAndroid.RESULTS.GRANTED;
+        debugLogger.success('PERMISSION', `SMS send permission: ${hasPermission}`);
+        return hasPermission;
+      }
+
+      // iOS cannot send silently; Expo path will open Messages composer.
+      debugLogger.success('PERMISSION', 'SMS sending available on iOS (composer only)');
+      return true;
     } catch (error) {
-      debugLogger.error('PERMISSION', 'Error checking SMS availability', error);
-      console.error('Error checking SMS availability:', error);
+      debugLogger.error('PERMISSION', 'Error checking SMS permissions', error);
       return false;
     }
   }
@@ -27,99 +66,120 @@ export class NativeSMSSender {
       debugLogger.info('SMS_SEND', `Attempting to send SMS to ${phoneNumber}`, { message });
 
       if (!phoneNumber || !message) {
-        debugLogger.error('SMS_SEND', 'Phone number and message are required');
-        return {
-          success: false,
-          error: 'Phone number and message are required'
-        };
+        const error = 'Phone number and message are required';
+        debugLogger.error('SMS_SEND', error);
+        return { success: false, error };
       }
 
-      const isAvailable = await this.checkSMSAvailability();
-      if (!isAvailable) {
-        debugLogger.error('SMS_SEND', 'SMS is not available on this device');
-        return {
-          success: false,
-          error: 'SMS is not available on this device'
-        };
+      const hasPermission = await this.checkSMSPermissions();
+      if (!hasPermission) {
+        const error = 'SMS sending permission not granted';
+        debugLogger.error('SMS_SEND', error);
+        return { success: false, error };
       }
 
-      console.log(`Attempting to send SMS to ${phoneNumber}: ${message}`);
-
-      if (Platform.OS === 'android') {
-        return await this.sendSMSAndroid(phoneNumber, message);
-      } else {
-        return await this.sendSMSIOS(phoneNumber, message);
-      }
+      return await this.sendDirectSMS(phoneNumber, message);
     } catch (error) {
       debugLogger.error('SMS_SEND', 'Error sending SMS', error);
-      console.error('Error sending SMS:', error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       };
     }
   }
 
-  private async sendSMSAndroid(phoneNumber: string, message: string): Promise<SMSSendResult> {
-    try {
-      debugLogger.info('SMS_SEND', 'Using Android SMS Intent method');
-      const smsUrl = `sms:${phoneNumber}?body=${encodeURIComponent(message)}`;
-
-      const canOpen = await Linking.canOpenURL(smsUrl);
-      if (!canOpen) {
-        debugLogger.error('SMS_SEND', 'Cannot open SMS app on this device');
-        return {
-          success: false,
-          error: 'Cannot open SMS app on this device'
+  private async sendDirectSMS(phoneNumber: string, message: string): Promise<SMSSendResult> {
+    return new Promise(async (resolve) => {
+      try {
+        const info = {
+          hasLib: !!mobileSms,
+          hasSendDirectSms: !!mobileSms?.sendDirectSms,
+          hasSend: !!mobileSms?.send,
+          platform: Platform.OS,
         };
+        debugLogger.info('SMS_SEND', 'Checking direct SMS availability', info);
+
+        // Direct/background SMS is Android-only and requires the native module.
+        if (Platform.OS === 'android' && mobileSms) {
+          if (typeof mobileSms.sendDirectSms === 'function') {
+            debugLogger.info('SMS_SEND', 'Using MobileSms.sendDirectSms');
+            await mobileSms.sendDirectSms(
+              phoneNumber,
+              message
+            );
+            return;
+          }
+
+          if (typeof mobileSms.send === 'function') {
+            debugLogger.info('SMS_SEND', 'Using MobileSms.send');
+            mobileSms.send(
+              phoneNumber,
+              message,
+              (success: boolean, msg: string) => {
+                if (success) {
+                  debugLogger.success('SMS_SEND', 'Direct SMS sent via send', {
+                    to: phoneNumber,
+                    method: 'send',
+                  });
+                  resolve({ success: true, message: 'SMS sent directly (send)' });
+                } else {
+                  debugLogger.error('SMS_SEND', 'send failed, falling back', { error: msg });
+                  this.sendViaExpoSMS(phoneNumber, message, resolve);
+                }
+              }
+            );
+            return;
+          }
+        }
+
+        debugLogger.warning('SMS_SEND', 'Direct SMS not available, using Expo SMS fallback');
+        this.sendViaExpoSMS(phoneNumber, message, resolve);
+      } catch (error) {
+        debugLogger.error('SMS_SEND', 'Error with direct SMS, falling back to Expo SMS', error);
+        this.sendViaExpoSMS(phoneNumber, message, resolve);
+      }
+    });
+  }
+
+  private async sendViaExpoSMS(
+    phoneNumber: string,
+    message: string,
+    resolve: (result: SMSSendResult) => void
+  ): Promise<void> {
+    try {
+      debugLogger.info('SMS_SEND', 'Using Expo SMS (will open messaging app)');
+
+      const isAvailable = await SMS.isAvailableAsync();
+      if (!isAvailable) {
+        const error = 'SMS not available on this device';
+        debugLogger.error('SMS_SEND', error);
+        resolve({ success: false, error });
+        return;
       }
 
-      await Linking.openURL(smsUrl);
-      debugLogger.success('SMS_SEND', 'SMS app opened successfully', { to: phoneNumber, method: 'Android Intent' });
-
-      return {
-        success: true,
-        message: 'SMS app opened with pre-filled message'
-      };
-    } catch (error) {
-      debugLogger.error('SMS_SEND', 'Android SMS error', error);
-      return {
-        success: false,
-        error: `Android SMS error: ${error}`
-      };
-    }
-  }
-
-  private async sendSMSIOS(phoneNumber: string, message: string): Promise<SMSSendResult> {
-    try {
-      debugLogger.info('SMS_SEND', 'Using iOS SMS API method');
       const result = await SMS.sendSMSAsync([phoneNumber], message);
 
       if (result.result === 'sent') {
-        debugLogger.success('SMS_SEND', 'SMS sent successfully via iOS API', { to: phoneNumber, result: result.result });
-        return {
-          success: true,
-          message: 'SMS sent successfully'
-        };
+        debugLogger.success('SMS_SEND', 'SMS sent via Expo (user-assisted)', {
+          to: phoneNumber,
+          method: 'expo-sms',
+        });
+        resolve({ success: true, message: 'SMS sent via messaging app (user-assisted)' });
       } else if (result.result === 'cancelled') {
-        debugLogger.warning('SMS_SEND', 'SMS was cancelled by user', { to: phoneNumber, result: result.result });
-        return {
-          success: false,
-          error: 'SMS was cancelled by user'
-        };
+        const error = 'SMS was cancelled by user';
+        debugLogger.warning('SMS_SEND', error);
+        resolve({ success: false, error });
       } else {
-        debugLogger.error('SMS_SEND', 'SMS sending failed or unknown result', { to: phoneNumber, result: result.result });
-        return {
-          success: false,
-          error: 'SMS sending failed or unknown result'
-        };
+        const error = `SMS sending failed or unknown result: ${result.result}`;
+        debugLogger.error('SMS_SEND', error);
+        resolve({ success: false, error });
       }
     } catch (error) {
-      debugLogger.error('SMS_SEND', 'iOS SMS error', error);
-      return {
+      debugLogger.error('SMS_SEND', 'Expo SMS error', error);
+      resolve({
         success: false,
-        error: `iOS SMS error: ${error}`
-      };
+        error: `Expo SMS error: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   }
 
@@ -128,7 +188,7 @@ export class NativeSMSSender {
     debugLogger.info('SMS_SEND', 'Generating auto-reply', {
       to: phoneNumber,
       originalMessage,
-      autoReply: replyMessage
+      autoReply: replyMessage,
     });
     return this.sendSMS(phoneNumber, replyMessage);
   }
@@ -145,7 +205,7 @@ export class NativeSMSSender {
     }
 
     if (message.includes('thank') || message.includes('thanks')) {
-      return 'You\'re welcome! This is an automated response.';
+      return "You're welcome! This is an automated response.";
     }
 
     if (message.includes('stop') || message.includes('unsubscribe')) {
