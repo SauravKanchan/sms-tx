@@ -2,6 +2,7 @@
 import argparse
 import logging
 import sys
+import time
 from typing import Dict, Any
 
 from flask import Flask, request, jsonify
@@ -14,6 +15,7 @@ from services.signing_service import SigningService
 from services.blockchain_service import BlockchainService
 from utils.action_handlers import handle_get_address, handle_transaction
 from utils.phone_validator import validate_transaction_phones, validate_phone_number
+from utils.sms_parser import parse_sms_fallback
 from asi1.asi1_client import ASI1Client, load_prompt_template
 
 # Configure logging
@@ -211,29 +213,50 @@ def handle_ai_message():
                 'error': 'message field is required'
             }), 400
 
-        logger.info(f"Processing AI message: {message}")
+        logger.info(f"Processing AI message: {message[:100]}...")
+        start_time = time.time()
 
-        # Load system prompt template
-        try:
-            system_prompt = load_prompt_template()
-        except Exception as e:
-            logger.error(f"Failed to load prompt template: {e}")
-            return jsonify({
-                'success': False,
-                'error': 'Failed to load AI prompt configuration'
-            }), 500
+        # Try regex parser first for efficiency
+        regex_start = time.time()
+        intent = parse_sms_fallback(message)
+        regex_time = time.time() - regex_start
+        parsing_method = "regex"
 
-        # Extract intent using ASI1 AI
-        ai_result = asi1_client.extract_intent(message, system_prompt)
+        # If regex parser returns "unknown", fall back to ASI1 AI
+        if intent.get('type') == 'unknown':
+            logger.info(f"Regex parser failed ({intent.get('reason')}) in {regex_time:.3f}s, falling back to ASI1 AI")
+            parsing_method = "ai_fallback"
 
-        if not ai_result['success']:
-            return jsonify({
-                'success': False,
-                'error': f"AI processing failed: {ai_result['error']}"
-            }), 500
+            # Load system prompt template
+            try:
+                system_prompt = load_prompt_template()
+            except Exception as e:
+                logger.error(f"Failed to load prompt template: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to load AI prompt configuration'
+                }), 500
 
-        intent = ai_result['intent']
-        logger.info(f"Extracted intent: {intent}")
+            # Extract intent using ASI1 AI
+            ai_start = time.time()
+            ai_result = asi1_client.extract_intent(message, system_prompt)
+            ai_time = time.time() - ai_start
+
+            if not ai_result['success']:
+                logger.error(f"AI processing failed after {ai_time:.3f}s: {ai_result['error']}")
+                return jsonify({
+                    'success': False,
+                    'error': f"AI processing failed: {ai_result['error']}"
+                }), 500
+
+            intent = ai_result['intent']
+            total_time = time.time() - start_time
+            logger.info(f"AI fallback completed in {ai_time:.3f}s (total: {total_time:.3f}s)")
+        else:
+            total_time = time.time() - start_time
+            logger.info(f"Regex parsing successful in {regex_time:.3f}s (total: {total_time:.3f}s)")
+
+        logger.info(f"Extracted intent using {parsing_method}: {intent}")
 
         # Route based on intent type
         intent_type = intent.get('type')
