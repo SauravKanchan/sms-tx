@@ -150,6 +150,7 @@ def create_transaction():
         
         logger.info(f"Processing transaction: {sender} -> {receiver}, amount: {amount}")
         
+        logger.info(f"Executing transaction through signing service")
         # Execute transaction through signing service
         result = signing_service.execute_transaction(sender, receiver, amount)
         

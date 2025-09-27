@@ -362,11 +362,11 @@ class SigningService:
     # -----------------------------
     def execute_transaction(self, sender_identifier: str, receiver_identifier: str, amount: str) -> Dict[str, Any]:
         """Execute a USDC transaction using threshold signing."""
+        logger.info(f"Executing transaction from {sender_identifier} to {receiver_identifier} for {amount} USDC")
         try:
-            # Validate users exist and get their addresses
+            # Validate sender exists
             with db_session() as session:
                 sender_user = session.query(User).filter_by(identifier=sender_identifier).first()
-                receiver_user = session.query(User).filter_by(identifier=receiver_identifier).first()
 
                 if not sender_user:
                     return {
@@ -376,17 +376,60 @@ class SigningService:
                         'receiver': receiver_identifier,
                         'amount': amount
                     }
-                if not receiver_user:
+
+                sender_address = sender_user.ethereum_address
+
+            # Check if receiver exists, if not create via DKG (outside session to avoid isolation issues)
+            receiver_user = None
+            logger.info(f"Checking if receiver {receiver_identifier} exists")
+            with db_session() as session:
+                receiver_user = session.query(User).filter_by(identifier=receiver_identifier).first()
+
+            if not receiver_user:
+                logger.info(f"Receiver {receiver_identifier} not found, creating via DKG")
+
+                # Auto-create receiver through DKG
+                from services.dkg_service import DKGService
+                dkg_service = DKGService(self.participant_id)
+
+                create_result = dkg_service.create_user_address(receiver_identifier, 'email')
+                if not create_result['success']:
                     return {
                         'success': False,
-                        'error': f'Receiver user not found: {receiver_identifier}',
+                        'error': f'Failed to create receiver {receiver_identifier}: {create_result["error"]}',
                         'sender': sender_identifier,
                         'receiver': receiver_identifier,
                         'amount': amount,
-                        'sender_address': sender_user.ethereum_address
+                        'sender_address': sender_address
                     }
 
-                sender_address = sender_user.ethereum_address
+                receiver_address = create_result['address']
+                logger.info(f"Successfully created receiver {receiver_identifier} with address {receiver_address}")
+
+                # Fund new receiver address with ETH
+                try:
+                    from services.blockchain_service import BlockchainService
+                    blockchain_service = BlockchainService()
+                    fund_result = blockchain_service.fund_address(receiver_address)
+                    if not fund_result['success']:
+                        logger.warning(f"Failed to fund new receiver address {receiver_address}: {fund_result['error']}")
+                except Exception as e:
+                    logger.warning(f"Error funding new receiver address: {e}")
+
+                # Query for receiver_user again in a fresh session after DKG creation
+                with db_session() as session:
+                    receiver_user = session.query(User).filter_by(identifier=receiver_identifier).first()
+                    if not receiver_user:
+                        return {
+                            'success': False,
+                            'error': f'Receiver creation succeeded but user not found in database: {receiver_identifier}',
+                            'sender': sender_identifier,
+                            'receiver': receiver_identifier,
+                            'amount': amount,
+                            'sender_address': sender_address
+                        }
+                    receiver_address = receiver_user.ethereum_address
+            else:
                 receiver_address = receiver_user.ethereum_address
             
             logger.info(f"Executing transaction: {sender_identifier} -> {receiver_identifier}, amount: {amount}")
