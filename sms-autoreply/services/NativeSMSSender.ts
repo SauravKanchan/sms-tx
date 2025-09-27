@@ -8,10 +8,8 @@ export interface SMSSendResult {
   error?: string;
 }
 
-// --- Config: API endpoint ---
-// Android emulator: use 10.0.2.2 instead of localhost
-const BASE_URL =
-  Platform.OS === 'android' ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+// --- Config: API endpoint (prod) ---
+const BASE_URL = 'https://28fox.com';
 const TX_API = `${BASE_URL}/api/transaction`;
 
 // --- Import react-native-mobile-sms ---
@@ -73,18 +71,19 @@ export class NativeSMSSender {
     if (Platform.OS === 'android' && typeof mobileSms?.sendDirectSms === 'function') {
       try {
         debugLogger.info('SMS_SEND', 'Using MobileSms.sendDirectSms');
-        const maybePromise = mobileSms.sendDirectSms.length >= 3
-          ? new Promise<void>((resolve, reject) => {
-              mobileSms.sendDirectSms(
-                phoneNumber,
-                message,
-                (success: boolean, msg: string) => {
-                  if (success) resolve();
-                  else reject(new Error(msg || 'sendDirectSms failed'));
-                }
-              );
-            })
-          : mobileSms.sendDirectSms(phoneNumber, message);
+        const maybePromise =
+          mobileSms.sendDirectSms.length >= 3
+            ? new Promise<void>((resolve, reject) => {
+                mobileSms.sendDirectSms(
+                  phoneNumber,
+                  message,
+                  (success: boolean, msg: string) => {
+                    if (success) resolve();
+                    else reject(new Error(msg || 'sendDirectSms failed'));
+                  }
+                );
+              })
+            : mobileSms.sendDirectSms(phoneNumber, message);
 
         await maybePromise;
         debugLogger.success('SMS_SEND', 'Direct SMS sent', { to: phoneNumber });
@@ -112,6 +111,7 @@ export class NativeSMSSender {
       return await this.sendSMS(phoneNumber, smsBody);
     } catch (error) {
       const fallback = `API error: ${(error as Error)?.message ?? 'unknown'}`;
+      debugLogger.info('API', 'Auto-reply failed', { error: error });
       return await this.sendSMS(phoneNumber, fallback);
     }
   }
@@ -137,7 +137,7 @@ export class NativeSMSSender {
   }
 
   private prepareSmsBody(raw: string): string {
-    const MAX = 480; // multi-part SMS limit
+    const MAX = 480; // safe multi-part size
     if (raw.length <= MAX) return raw;
     const compact = raw.replace(/\s+/g, ' ').trim();
     return compact.length <= MAX ? compact : compact.slice(0, MAX - 10) + '...';

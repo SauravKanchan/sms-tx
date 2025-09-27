@@ -2,7 +2,7 @@ export interface LogEntry {
   id: string;
   timestamp: Date;
   level: 'info' | 'warning' | 'error' | 'success';
-  category: 'SMS_RECEIVE' | 'SMS_SEND' | 'BACKGROUND' | 'PERMISSION' | 'SYSTEM';
+  category: 'SMS_RECEIVE' | 'SMS_SEND' | 'BACKGROUND' | 'PERMISSION' | 'SYSTEM' | 'API';
   message: string;
   data?: any;
 }
