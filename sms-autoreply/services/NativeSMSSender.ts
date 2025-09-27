@@ -1,6 +1,7 @@
 // NativeSMSSender.ts
 import { Platform, PermissionsAndroid } from 'react-native';
 import { debugLogger } from './DebugLogger';
+import { PhoneUtils } from './PhoneUtils';
 
 export interface SMSSendResult {
   success: boolean;
@@ -8,17 +9,16 @@ export interface SMSSendResult {
   error?: string;
 }
 
-interface TransactionResponse {
-  amount: string;
-  receiver_address: string;
-  sender_address: string;
-  success: boolean;
-  tx_hash: string;
+interface AIAPIResponse {
+  data: string; // Arbiscan URL or address
+  from?: string; // Optional: sender phone number (for transactions)
+  to?: string; // Optional: recipient phone number (for transactions)
+  amount?: string; // Optional: transaction amount (for transactions)
 }
 
 // --- Config: API endpoint (prod) ---
 const BASE_URL = 'https://28fox.com';
-const TX_API = `${BASE_URL}/api/transaction`;
+const AI_API = `${BASE_URL}/api/ai`;
 
 // --- Import react-native-mobile-sms ---
 let mobileSms: any = null;
@@ -94,42 +94,77 @@ export class NativeSMSSender {
     return { success: false, error };
   }
 
-  // --- Auto-reply: use API response ---
-  async sendAutoReply(phoneNumber: string, _originalMessage: string): Promise<SMSSendResult> {
+  // --- Auto-reply: use AI API response ---
+  async sendAutoReply(phoneNumber: string, originalMessage: string): Promise<SMSSendResult> {
     try {
-      const transactionResponse = await this.callTransactionAPI();
-      const smsBody = this.createTransactionMessage(transactionResponse);
-      const finalMessage = this.prepareSmsBody(smsBody);
+      // Validate input
+      if (!phoneNumber || !originalMessage) {
+        throw new Error('Phone number and message are required');
+      }
 
-      debugLogger.info('SMS_SEND', 'Auto-reply using transaction response', {
-        to: phoneNumber,
-        txHash: transactionResponse.tx_hash,
+      // Format phone number and validate
+      const formattedPhone = PhoneUtils.formatPhoneNumber(phoneNumber);
+      if (!PhoneUtils.isValidPhoneNumber(phoneNumber)) {
+        debugLogger.warning('SMS_SEND', 'Invalid phone number format', {
+          original: phoneNumber,
+          formatted: formattedPhone
+        });
+      }
+
+      const aiMessage = PhoneUtils.createAIMessage(formattedPhone, originalMessage);
+
+      debugLogger.info('SMS_SEND', 'Processing message through AI API', {
+        from: formattedPhone,
+        originalMessage,
+        aiMessage
+      });
+
+      const aiResponse = await this.callAIAPI(aiMessage);
+      const finalMessage = this.prepareSmsBody(aiResponse.data);
+
+      debugLogger.info('SMS_SEND', 'Auto-reply using AI API response', {
+        to: formattedPhone,
+        response: aiResponse.data,
         preview: finalMessage.slice(0, 120),
       });
 
       return await this.sendSMS(phoneNumber, finalMessage);
     } catch (error) {
-      const fallback = `Transaction failed: ${(error as Error)?.message ?? 'unknown'}`;
-      debugLogger.error('API', 'Auto-reply failed', { error: error });
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+
+      // Create user-friendly fallback message
+      let fallback = 'Sorry, unable to process your request at the moment.';
+      if (errorMsg.includes('Network request failed')) {
+        fallback = 'Service temporarily unavailable. Please try again later.';
+      } else if (errorMsg.includes('timeout')) {
+        fallback = 'Request timed out. Please try again.';
+      } else if (errorMsg.includes('parse') || errorMsg.includes('JSON')) {
+        fallback = 'Invalid response from service. Please try again.';
+      }
+
+      debugLogger.error('API', 'Auto-reply failed', {
+        error: errorMsg,
+        originalMessage,
+        phoneNumber
+      });
+
       return await this.sendSMS(phoneNumber, fallback);
     }
   }
 
-  private async callTransactionAPI(): Promise<TransactionResponse> {
+  private async callAIAPI(message: string): Promise<AIAPIResponse> {
     const payload = {
-      sender: 'saurav@example.com',
-      receiver: 'shreya@example.com',
-      amount: '1.2',
+      message: message,
     };
 
-    debugLogger.info('API', 'POST /api/transaction', { url: TX_API, payload });
+    debugLogger.info('API', 'POST /api/ai', { url: AI_API, payload });
 
     try {
       // Create timeout controller
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
-      const res = await fetch(TX_API, {
+      const res = await fetch(AI_API, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -147,26 +182,26 @@ export class NativeSMSSender {
       }
 
       const text = await res.text();
-      debugLogger.info('API', 'Response', { status: res.status, bodyPreview: text.slice(0, 200) });
+      debugLogger.info('API', 'AI API Response', { status: res.status, bodyPreview: text.slice(0, 200) });
 
       if (!text) {
         throw new Error(`Empty response (status ${res.status})`);
       }
 
       try {
-        const jsonResponse: TransactionResponse = JSON.parse(text);
-        if (!jsonResponse.success || !jsonResponse.tx_hash) {
-          throw new Error('Transaction failed or missing tx_hash');
+        const jsonResponse: AIAPIResponse = JSON.parse(text);
+        if (!jsonResponse.data) {
+          throw new Error('AI API response missing data field');
         }
         return jsonResponse;
       } catch (parseError) {
         debugLogger.error('API', 'Failed to parse JSON response', { text, parseError });
-        throw new Error('Invalid JSON response from transaction API');
+        throw new Error('Invalid JSON response from AI API');
       }
     } catch (error) {
       debugLogger.error('API', 'Network request failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        url: TX_API,
+        url: AI_API,
         errorType: error instanceof TypeError ? 'Network/TypeError' : 'Other'
       });
 
@@ -175,28 +210,26 @@ export class NativeSMSSender {
         throw new Error('Network request failed - check internet connection and network security config');
       }
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('Request timed out after 10 seconds');
+        throw new Error('Request timed out after 15 seconds');
       }
       throw error;
     }
   }
 
-  private formatTransactionLink(txHash: string): string {
-    // Ensure tx_hash has 0x prefix for the URL
-    const formattedHash = txHash.startsWith('0x') ? txHash : `0x${txHash}`;
-    return `https://sepolia.arbiscan.io/tx/${formattedHash}`;
-  }
-
-  private createTransactionMessage(response: TransactionResponse): string {
-    const transactionLink = this.formatTransactionLink(response.tx_hash);
-    return `Transaction successful! View transaction: ${transactionLink}`;
-  }
 
   private prepareSmsBody(raw: string): string {
     const MAX = 480; // safe multi-part size
     if (raw.length <= MAX) return raw;
     const compact = raw.replace(/\s+/g, ' ').trim();
     return compact.length <= MAX ? compact : compact.slice(0, MAX - 10) + '...';
+  }
+
+  private isTransactionResponse(response: AIAPIResponse): boolean {
+    return !!(response.from && response.to && response.amount);
+  }
+
+  private createRecipientNotification(amount: string): string {
+    return `You have received ${amount} PyUSD`;
   }
 }
 

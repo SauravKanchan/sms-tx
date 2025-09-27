@@ -277,7 +277,9 @@ def handle_ai_message():
 
         # Return the result
         if result['success']:
-            return jsonify({'data': result['data']})
+            # Remove 'success' field and return all other fields at top level
+            response_data = {k: v for k, v in result.items() if k != 'success'}
+            return jsonify(response_data)
         else:
             return jsonify(result), 400
 

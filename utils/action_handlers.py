@@ -124,7 +124,10 @@ def handle_transaction(from_phone: str, to_phone: str, amount: float, signing_se
 
         return {
             'success': True,
-            'data': arbiscan_url
+            'data': arbiscan_url,
+            'from': from_phone,
+            'to': to_phone,
+            'amount': str(amount)
         }
 
     except Exception as e:
