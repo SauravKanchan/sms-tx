@@ -94,13 +94,23 @@ class DKGService:
                         if not user:
                             raise Exception(f"Failed to create or find user {identifier}")
 
-                # Update DKG session
+                # Update DKG session with validation
                 dkg_session = session.query(DKGSession).filter_by(session_id=session_id).one_or_none()
                 if dkg_session:
                     dkg_session.status = 'completed'
                     dkg_session.group_public_key = group_pubkey.hex()
-                    dkg_session.ethereum_address = user.ethereum_address  # Use the actual user's address
+
+                    # CRITICAL: Store the address derived from group public key, not user.ethereum_address
+                    # This prevents the inconsistency bug where different group pubkeys had same stored address
+                    dkg_session.ethereum_address = ethereum_address
                     dkg_session.completed_at = datetime.now(timezone.utc)
+
+                    # Validate consistency between group pubkey and stored address
+                    if user.ethereum_address.lower() != ethereum_address.lower():
+                        logger.warning(f"Address mismatch for {identifier}: user={user.ethereum_address}, derived={ethereum_address}")
+                        # Update user record to match the DKG-derived address (DKG is authoritative)
+                        user.ethereum_address = ethereum_address
+                        logger.info(f"Updated user address to match DKG result: {ethereum_address}")
 
                 # Store threshold shares centrally for POC (within same session)
                 self._store_threshold_shares_in_session(session, session_id, identifier, dkg_result)
