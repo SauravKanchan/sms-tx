@@ -40,6 +40,12 @@ def parse_sms_fallback(text: str) -> Dict[str, Union[str, int, float]]:
         return {"type": "unknown", "reason": "sender phone too short"}
     sender = sender_digits[-10:]
 
+    # Check for balance keyword first (high priority)
+    balance_match = re.search(r'\bbalance\b', message, re.IGNORECASE)
+    if balance_match:
+        logger.info(f"Balance keyword detected - treating as get-balance for {sender}")
+        return {"type": "get-balance", "user": sender}
+
     # Find first numeric amount (int or float)
     num_match = re.search(r'(?<![\w.])(\d+(?:\.\d+)?)(?![\w.])', message)
     if not num_match:

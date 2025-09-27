@@ -136,3 +136,71 @@ def handle_transaction(from_phone: str, to_phone: str, amount: float, signing_se
             'success': False,
             'error': f'Internal server error: {str(e)}'
         }
+
+def handle_get_balance(user_phone: str, blockchain_service, db_session) -> Dict[str, Any]:
+    """
+    Handle balance retrieval for a user.
+
+    Args:
+        user_phone: 10-digit phone number as string
+        blockchain_service: Blockchain service instance
+        db_session: Database session class
+
+    Returns:
+        Dict containing success status and balance data or error
+    """
+    try:
+        # Return "0" if no phone number provided
+        if not user_phone:
+            logger.info("No phone number provided for balance request - returning 0")
+            return {
+                'success': True,
+                'data': "0"
+            }
+
+        # Validate phone number
+        if len(user_phone) != 10 or not user_phone.isdigit():
+            logger.warning(f"Invalid phone number for balance request: {user_phone}")
+            return {
+                'success': True,
+                'data': "0"
+            }
+
+        # Check if user exists and get their address
+        from models.database import User
+        with db_session() as session:
+            user = session.query(User).filter_by(identifier=user_phone).first()
+
+            if not user:
+                # User doesn't exist, return 0 balance
+                logger.info(f"User not found for balance request: {user_phone}")
+                return {
+                    'success': True,
+                    'data': "0"
+                }
+
+            # Get USDC balance from blockchain service
+            logger.info(f"Fetching USDC balance for user: {user_phone}, address: {user.ethereum_address}")
+            balance_result = blockchain_service.get_usdc_balance(user.ethereum_address)
+
+            if not balance_result['success']:
+                logger.error(f"Failed to fetch balance for {user_phone}: {balance_result['error']}")
+                return {
+                    'success': True,
+                    'data': "0"
+                }
+
+            # Return just the balance value as string
+            balance = balance_result['balance']
+            logger.info(f"Balance fetched for {user_phone}: {balance} USDC")
+            return {
+                'success': True,
+                'data': balance
+            }
+
+    except Exception as e:
+        logger.error(f"Error in handle_get_balance: {e}")
+        return {
+            'success': True,
+            'data': "0"
+        }

@@ -13,7 +13,7 @@ from models.database import init_database, db_session
 from services.dkg_service import DKGService
 from services.signing_service import SigningService
 from services.blockchain_service import BlockchainService
-from utils.action_handlers import handle_get_address, handle_transaction
+from utils.action_handlers import handle_get_address, handle_transaction, handle_get_balance
 from utils.phone_validator import validate_transaction_phones, validate_phone_number
 from utils.sms_parser import parse_sms_fallback
 from asi1.asi1_client import ASI1Client, load_prompt_template
@@ -270,6 +270,16 @@ def handle_ai_message():
                 }), 400
 
             result = handle_get_address(user_phone, dkg_service, db_session)
+
+        elif intent_type == 'get-balance':
+            user_phone = intent.get('user')
+            if not user_phone:
+                return jsonify({
+                    'success': False,
+                    'error': 'Missing user phone number in intent'
+                }), 400
+
+            result = handle_get_balance(user_phone, blockchain_service, db_session)
 
         elif intent_type == 'transaction':
             from_phone = intent.get('from')
