@@ -95,13 +95,7 @@ def get_address():
                 'error': result['error']
             }), 500
         
-        # Fund new address with ETH
-        try:
-            fund_result = blockchain_service.fund_address(result['address'])
-            if not fund_result['success']:
-                logger.warning(f"Failed to fund address {result['address']}: {fund_result['error']}")
-        except Exception as e:
-            logger.warning(f"Error funding address: {e}")
+        # Note: Users are now only funded when they attempt transactions and balance is below 0.0001 ETH
         
         return jsonify({
             'success': True,

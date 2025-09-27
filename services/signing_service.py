@@ -251,6 +251,10 @@ class SigningService:
             except Exception:
                 bc = None  # type: ignore
 
+            # Use 0.0001 ETH as threshold for funding transactions
+            threshold_eth = Decimal("0.0001")
+            threshold_wei = eth_to_wei(threshold_eth)
+
             # Faucet amount from config (string/number) -> Decimal
             try:
                 faucet_amount_eth = Decimal(str(config.faucet_amount_eth))
@@ -287,9 +291,9 @@ class SigningService:
                 balance_wei = self._get_balance_wei_via_web3(sender_address)
 
             balance_eth = wei_to_eth(balance_wei)
-            logger.info(f"[GasCheck] Sender {sender_address} balance: {balance_eth} ETH (threshold {faucet_amount_eth} ETH)")
+            logger.info(f"[GasCheck] Sender {sender_address} balance: {balance_eth} ETH (threshold {threshold_eth} ETH)")
 
-            if balance_wei >= faucet_amount_wei:
+            if balance_wei >= threshold_wei:
                 return {'success': True, 'funded': False, 'balance_eth': str(balance_eth)}
 
             if not faucet_pk:
@@ -298,9 +302,9 @@ class SigningService:
                     'error': 'Sender balance below threshold and faucet_private_key not configured'
                 }
 
-            # Top up to reach threshold (send only the missing difference)
-            topup_amount_wei = faucet_amount_wei - balance_wei
-            if topup_amount_wei <= 0:
+            # Top up to faucet amount (send the full faucet amount for sufficient gas)
+            topup_amount_wei = faucet_amount_wei
+            if balance_wei >= threshold_wei:
                 return {'success': True, 'funded': False, 'balance_eth': str(balance_eth)}
 
             logger.info(f"[GasTopUp] Funding {sender_address} with {wei_to_eth(topup_amount_wei)} ETH")
@@ -406,15 +410,7 @@ class SigningService:
                 receiver_address = create_result['address']
                 logger.info(f"Successfully created receiver {receiver_identifier} with address {receiver_address}")
 
-                # Fund new receiver address with ETH
-                try:
-                    from services.blockchain_service import BlockchainService
-                    blockchain_service = BlockchainService()
-                    fund_result = blockchain_service.fund_address(receiver_address)
-                    if not fund_result['success']:
-                        logger.warning(f"Failed to fund new receiver address {receiver_address}: {fund_result['error']}")
-                except Exception as e:
-                    logger.warning(f"Error funding new receiver address: {e}")
+                # Note: Receiver addresses are now only funded when they attempt transactions and balance is below 0.0001 ETH
 
                 # Query for receiver_user again in a fresh session after DKG creation
                 with db_session() as session:

@@ -106,8 +106,8 @@ class BlockchainService:
             
             logger.info(f"Current balance for {address}: {balance_eth} ETH")
             
-            # Only fund if balance is low (less than 0.005 ETH)
-            if balance_eth > 0.005:
+            # Only fund if balance is low (less than 0.0001 ETH)
+            if balance_eth >= 0.0001:
                 return {
                     'success': True,
                     'message': 'Address already has sufficient ETH',
