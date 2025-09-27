@@ -41,12 +41,6 @@ export class DebugLogger {
     // Also log to console for debugging
     const consoleMessage = `[${category}] ${message}`;
     switch (level) {
-      case 'error':
-        console.error(consoleMessage, data);
-        break;
-      case 'warning':
-        console.warn(consoleMessage, data);
-        break;
       case 'success':
         console.log(`✅ ${consoleMessage}`, data);
         break;
