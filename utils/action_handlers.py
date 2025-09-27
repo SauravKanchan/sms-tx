@@ -34,9 +34,7 @@ def handle_get_address(user_phone: str, dkg_service, db_session) -> Dict[str, An
                 logger.info(f"Returning existing address for phone: {user_phone}")
                 return {
                     'success': True,
-                    'address': user.ethereum_address,
-                    'created': False,
-                    'identifier': user_phone
+                    'data': user.ethereum_address
                 }
 
         # User doesn't exist, create new address through DKG
@@ -52,9 +50,7 @@ def handle_get_address(user_phone: str, dkg_service, db_session) -> Dict[str, An
 
         return {
             'success': True,
-            'address': result['address'],
-            'created': True,
-            'identifier': user_phone
+            'data': result['address']
         }
 
     except Exception as e:
@@ -123,12 +119,12 @@ def handle_transaction(from_phone: str, to_phone: str, amount: float, signing_se
                 'error': result['error']
             }
 
+        # Create Arbiscan URL for the transaction
+        arbiscan_url = f"https://sepolia.arbiscan.io/tx/0x{result['tx_hash']}"
+
         return {
             'success': True,
-            'tx_hash': result['tx_hash'],
-            'sender_address': result['sender_address'],
-            'receiver_address': result['receiver_address'],
-            'amount': amount
+            'data': arbiscan_url
         }
 
     except Exception as e:

@@ -277,7 +277,7 @@ def handle_ai_message():
 
         # Return the result
         if result['success']:
-            return jsonify(result)
+            return jsonify({'data': result['data']})
         else:
             return jsonify(result), 400
 
