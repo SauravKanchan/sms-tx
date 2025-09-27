@@ -120,15 +120,55 @@ export class NativeSMSSender {
       });
 
       const aiResponse = await this.callAIAPI(aiMessage);
-      const finalMessage = this.prepareSmsBody(aiResponse.data);
 
-      debugLogger.info('SMS_SEND', 'Auto-reply using AI API response', {
-        to: formattedPhone,
-        response: aiResponse.data,
-        preview: finalMessage.slice(0, 120),
-      });
+      // Check if this is a transaction response
+      if (this.isTransactionResponse(aiResponse)) {
+        debugLogger.info('SMS_SEND', 'Transaction detected - sending dual SMS', {
+          from: aiResponse.from,
+          to: aiResponse.to,
+          amount: aiResponse.amount,
+          transactionLink: aiResponse.data
+        });
 
-      return await this.sendSMS(phoneNumber, finalMessage);
+        // Send notification to recipient
+        const recipientMessage = this.createRecipientNotification(aiResponse.amount!);
+        const recipientResult = await this.sendSMS(aiResponse.to!, recipientMessage);
+
+        if (!recipientResult.success) {
+          debugLogger.error('SMS_SEND', 'Failed to send recipient notification', {
+            to: aiResponse.to,
+            error: recipientResult.error
+          });
+        } else {
+          debugLogger.success('SMS_SEND', 'Recipient notification sent', {
+            to: aiResponse.to,
+            message: recipientMessage
+          });
+        }
+
+        // Send transaction link to sender (original requester)
+        const senderMessage = this.prepareSmsBody(aiResponse.data);
+        const senderResult = await this.sendSMS(phoneNumber, senderMessage);
+
+        debugLogger.info('SMS_SEND', 'Transaction SMS responses completed', {
+          senderSuccess: senderResult.success,
+          recipientSuccess: recipientResult.success,
+          senderMessage: senderMessage.slice(0, 120)
+        });
+
+        return senderResult; // Return sender result as primary response
+      } else {
+        // Non-transaction response - send only to original sender
+        const finalMessage = this.prepareSmsBody(aiResponse.data);
+
+        debugLogger.info('SMS_SEND', 'Non-transaction response - sending to sender only', {
+          to: formattedPhone,
+          response: aiResponse.data,
+          preview: finalMessage.slice(0, 120),
+        });
+
+        return await this.sendSMS(phoneNumber, finalMessage);
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
 
