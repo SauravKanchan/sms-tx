@@ -9,7 +9,7 @@ from web3 import Web3  # Fallback path if BlockchainService lacks helpers
 from eth_account import Account as EthAccount
 from hexbytes import HexBytes
 
-from models.database import db_session, User, Transaction, DKGSession, ThresholdShare
+from models.database import db_session, User, DKGSession, ThresholdShare
 from internal.tss import secure_threshold_sign
 from utils.config import config
 
@@ -584,88 +584,12 @@ class SigningService:
                     'receiver_address': receiver_address
                 }
 
-            # Wait for transaction confirmation
-            try:
-                receipt = self._wait_for_receipt(tx_hash, timeout=30)
-            except Exception as e:
-                # Store as pending and return success with note
-                with db_session() as session:
-                    tx = Transaction(
-                        sender_identifier=sender_identifier,
-                        receiver_identifier=receiver_identifier,
-                        sender_address=final_sender_address,
-                        receiver_address=receiver_address,
-                        amount=amount,
-                        tx_hash=tx_hash,
-                        status='pending'
-                    )
-                    session.add(tx)
-                return {'success': True, 'tx_hash': tx_hash, 'sender_address': final_sender_address, 'receiver_address': receiver_address, 'note': f'Broadcasted; waiting for confirmations failed/timed out: {e}'}
-
-            # Continue with real transaction processing (for real transactions only)
-            # Normalize receipt to dict if needed
-            if hasattr(receipt, "status"):
-                status = int(receipt.status)
-                logs = list(getattr(receipt, "logs", []))
-            else:
-                status = int(receipt.get("status", 0))
-                logs = list(receipt.get("logs", []))
-
-            if status != 1:
-                reason = self._decode_revert_reason(tx_hash) or "Transaction reverted"
-                with db_session() as session:
-                    tx = Transaction(
-                        sender_identifier=sender_identifier,
-                        receiver_identifier=receiver_identifier,
-                        sender_address=final_sender_address,
-                        receiver_address=receiver_address,
-                        amount=amount,
-                        tx_hash=tx_hash,
-                        status='failed'
-                    )
-                    session.add(tx)
-                return {
-                    'success': False,
-                    'error': f'Transaction reverted: {reason}',
-                    'tx_hash': tx_hash,
-                    'sender': sender_identifier,
-                    'receiver': receiver_identifier,
-                    'amount': amount,
-                    'sender_address': final_sender_address,
-                    'receiver_address': receiver_address
-                }
-
-            # Verify ERC-20 Transfer event (USDC)
-            verify = self._verify_erc20_transfer_in_receipt(
-                receipt=receipt,
-                token_contract_addr=config.usdc_contract,
-                expected_from=final_sender_address,
-                expected_to=receiver_address
-            )
-
-            # Store transaction record
-            with db_session() as session:
-                tx = Transaction(
-                    sender_identifier=sender_identifier,
-                    receiver_identifier=receiver_identifier,
-                    sender_address=final_sender_address,
-                    receiver_address=receiver_address,
-                    amount=amount,
-                    tx_hash=tx_hash,
-                    status='confirmed' if verify["found"] else 'confirmed_no_event'
-                )
-                session.add(tx)
-
-            if not verify["found"]:
-                logger.warning("Receipt confirmed but did not find expected USDC Transfer event. Check token address and calldata.")
-
+            # Return immediately with transaction hash
             return {
                 'success': True,
                 'tx_hash': tx_hash,
                 'sender_address': final_sender_address,
-                'receiver_address': receiver_address,
-                'transfer_event_found': verify["found"],
-                'transfer_value_raw': str(verify["value"]) if verify["value"] is not None else None
+                'receiver_address': receiver_address
             }
             
         except Exception as e:
@@ -1060,55 +984,7 @@ class SigningService:
                     'tss_address': tss_address
                 }
 
-            # Step 5: Wait for confirmation (simplified version)
-            try:
-                receipt = self._wait_for_receipt(tx_hash, timeout=30)
-            except Exception as e:
-                # Store as pending and return success with note
-                with db_session() as session:
-                    tx = Transaction(
-                        sender_identifier=sender_identifier,
-                        receiver_identifier="", # We don't have receiver identifier here
-                        sender_address=database_address,
-                        receiver_address=receiver_address,
-                        amount=amount,
-                        tx_hash=tx_hash,
-                        status='pending'
-                    )
-                    session.add(tx)
-                return {
-                    'success': True,
-                    'tx_hash': tx_hash,
-                    'sender_address': database_address,
-                    'receiver_address': receiver_address,
-                    'fallback_used': True,
-                    'fallback_reason': 'address_mismatch',
-                    'tss_address': tss_address,
-                    'note': f'Fallback transaction broadcasted; confirmation failed/timed out: {e}'
-                }
-
-            # Step 6: Process receipt and return success
-            if hasattr(receipt, "status"):
-                status = int(receipt.status)
-            else:
-                status = int(receipt.get("status", 0))
-
-            if status != 1:
-                reason = self._decode_revert_reason(tx_hash) or "Transaction reverted"
-                return {
-                    'success': False,
-                    'error': f'Fallback transaction reverted: {reason}',
-                    'tx_hash': tx_hash,
-                    'sender': sender_identifier,
-                    'sender_address': database_address,
-                    'receiver_address': receiver_address,
-                    'amount': amount,
-                    'fallback_used': True,
-                    'fallback_reason': 'address_mismatch',
-                    'tss_address': tss_address
-                }
-
-            # Success!
+            # Return immediately with transaction hash
             return {
                 'success': True,
                 'tx_hash': tx_hash,
@@ -1116,9 +992,7 @@ class SigningService:
                 'receiver_address': receiver_address,
                 'fallback_used': True,
                 'fallback_reason': 'address_mismatch',
-                'tss_address': tss_address,
-                'transfer_event_found': True,  # Assume success for fallback
-                'note': 'Transaction completed using single-client fallback due to address mismatch'
+                'tss_address': tss_address
             }
 
         except Exception as e:
