@@ -102,7 +102,7 @@ class Transaction(Base):
 class DKGSession(Base):
     """DKG session coordination and state."""
     __tablename__ = 'dkg_sessions'
-    
+
     id = Column(Integer, primary_key=True)
     session_id = Column(String(64), unique=True, nullable=False, index=True)
     user_identifier = Column(String(255), nullable=False)
@@ -114,6 +114,13 @@ class DKGSession(Base):
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
+
+    # Prevent multiple completed DKG sessions per user
+    __table_args__ = (
+        Index('ix_dkg_sessions_user_identifier', 'user_identifier'),
+        Index('ix_dkg_sessions_status', 'status'),
+        # Note: Unique constraint for (user_identifier, status='completed') would require custom check
+    )
     
     def to_dict(self) -> Dict[str, Any]:
         return {

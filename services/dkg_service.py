@@ -27,7 +27,19 @@ class DKGService:
     def create_user_address(self, identifier: str, identifier_type: str = 'email') -> Dict[str, Any]:
         """Create a new Ethereum address for a user through DKG."""
         try:
-            # Generate unique session ID
+            # ROOT CAUSE FIX: Check if user already exists before starting DKG
+            with db_session() as session:
+                existing_user = session.query(User).filter_by(identifier=identifier).first()
+                if existing_user:
+                    logger.info(f"User {identifier} already exists, returning existing address: {existing_user.ethereum_address}")
+                    return {
+                        'success': True,
+                        'address': existing_user.ethereum_address,
+                        'message': 'User already exists, returning existing address',
+                        'existing_user': True
+                    }
+
+            # Generate unique session ID for new users only
             session_id = str(uuid.uuid4())
             
             # Get other participants
