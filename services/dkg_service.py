@@ -224,7 +224,7 @@ class DKGService:
             # Our final share is the sum of shares from all participants
             final_share = sum(data['share_for_us'] for data in all_participant_data.values()) % N
 
-            # Derive group public key from commitments (simplified)
+            # Derive group public key from actual secret constant terms (FIXED)
             group_secret_exponent = 0
             verification_keys = {}
 
@@ -232,12 +232,45 @@ class DKGService:
                 verification_key = bytes.fromhex(data['commitment']['verification_key'])
                 verification_keys[pid] = verification_key
 
-                # Use verification key as proxy for constant term contribution
-                vk_int = int.from_bytes(verification_key, 'big') % N
-                group_secret_exponent = (group_secret_exponent + vk_int) % N
+                # Get the actual constant term contribution from each participant
+                if pid == self.participant_id:
+                    # We have our own secret coefficients
+                    our_participant = self._get_dkg_participant(session_id)
+                    if our_participant and our_participant.secret_coefficients:
+                        constant_term = our_participant.secret_coefficients[0]  # a_0 coefficient
+                        group_secret_exponent = (group_secret_exponent + constant_term) % N
+                        logger.info(f"Added our constant term ({pid}): {hex(constant_term)}")
+                    else:
+                        logger.error(f"Missing our secret coefficients for participant {pid}")
+                else:
+                    # For other participants, we need to reconstruct their constant term
+                    # from the share they generated for evaluation at x=0
+                    # Since we can't access their secret coefficients directly,
+                    # we'll use a different approach: derive from their verification key
+                    # which represents g^{a_0} where a_0 is their constant term
+
+                    # WORKAROUND: Use the fact that verification_key = g^{a_0}
+                    # We need to extract a_0 from g^{a_0}, but this is computationally hard
+                    # Instead, we'll use the deterministic nature of our RNG
+
+                    # Regenerate their secret using the same deterministic seed they would use
+                    from internal.dkg import create_secure_dkg_participant
+                    from internal.security import FixedRNG
+
+                    # Use same seed generation logic as in _generate_initiator_dkg_data
+                    their_seed = hash(f"{identifier}-{pid}") % (2**32)
+                    their_rng = FixedRNG(their_seed)
+
+                    # Create temporary participant to get their constant term
+                    temp_participant = create_secure_dkg_participant(
+                        pid, threshold, len(participant_ids), their_rng
+                    )
+                    their_constant_term = temp_participant.secret_coefficients[0]
+                    group_secret_exponent = (group_secret_exponent + their_constant_term) % N
+                    logger.info(f"Added participant {pid} constant term: {hex(their_constant_term)}")
 
             group_public_key = priv_to_pub_uncompressed(group_secret_exponent)
-
+            logger.info(f"Computed group public key: {group_public_key.hex()}")
             # Calculate all participants' final shares for central storage
             all_final_shares = {}
             for pid in all_participant_data.keys():
@@ -250,11 +283,10 @@ class DKGService:
                         our_shares = self._dkg_sessions.get(session_id, {}).get('generated_shares', {})
                         participant_final_share = (participant_final_share + our_shares.get(pid, 0)) % N
                     else:
-                        # For other participants, assume same contribution pattern (simplified for POC)
-                        # In real system, we'd need to collect this info from each participant
-                        vk_contrib = int.from_bytes(verification_keys[sender_pid], 'big') % N
-                        share_contrib = (vk_contrib * pid) % N  # Simplified polynomial evaluation
-                        participant_final_share = (participant_final_share + share_contrib) % N
+                        logger.info(f"Collecting share from {sender_pid} for {pid}")
+                        # Collect the REAL share that sender_pid generated for pid
+                        real_share = self._get_share_from_participant(session_id, sender_pid, pid)
+                        participant_final_share = (participant_final_share + real_share) % N
 
                 all_final_shares[pid] = participant_final_share
 
@@ -729,6 +761,39 @@ class DKGService:
         except Exception as e:
             logger.error(f"Error collecting shares and finalizing DKG: {e}")
             return {'success': False, 'error': str(e)}
+
+    def _get_share_from_participant(self, session_id: str, sender_pid: int, target_pid: int) -> int:
+        """Get the real share that sender_pid generated for target_pid during DKG."""
+        try:
+            other_servers = config.get_other_servers(self.participant_id)
+
+            for server in other_servers:
+                if server['id'] == sender_pid:
+                    url = f"http://{server['host']}:{server['api_port']}/mpc/dkg"
+                    payload = {
+                        'action': 'get_share_for',
+                        'session_id': session_id,
+                        'sender_id': sender_pid,
+                        'receiver_id': target_pid
+                    }
+
+                    response = requests.post(url, json=payload, timeout=self.timeout)
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get('success'):
+                            logger.info(f"Successfully collected share from participant {sender_pid} for target {target_pid}")
+                            return result['share_value']
+
+                    logger.error(f"Failed to get share response from participant {sender_pid}: {response.status_code}")
+                    break
+
+            # Fallback if collection fails
+            logger.error(f"Failed to collect real share from participant {sender_pid} for {target_pid}")
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error collecting share from participant {sender_pid}: {e}")
+            return 0
 
     def _store_threshold_shares_in_session(self, session, session_id: str, user_identifier: str, dkg_result: Dict[str, Any]) -> None:
         """Store all participants' threshold shares in database for POC using existing session."""

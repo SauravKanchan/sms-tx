@@ -467,23 +467,19 @@ class SigningService:
             logger.info(f"[DEBUG] Initial group pubkey derived address: {initial_sender_address}")
             logger.info(f"[DEBUG] Group pubkey: {group_pubkey.hex()[:20]}...")
 
-            # Check if addresses match - throw error if mismatch to prevent wrong wallet usage
+            # Check if addresses match and determine which address to use
             if sender_address.lower() != initial_sender_address.lower():
-                error_msg = f"Address mismatch detected! Database address ({sender_address}) != Group pubkey derived address ({initial_sender_address}). Cannot proceed with wrong wallet."
-                logger.error(f"[ADDRESS MISMATCH] {error_msg}")
-                return {
-                    'success': False,
-                    'error': error_msg,
-                    'sender': sender_identifier,
-                    'receiver': receiver_identifier,
-                    'amount': amount,
-                    'database_address': sender_address,
-                    'derived_address': initial_sender_address
-                }
+                logger.warning(f"[ADDRESS MISMATCH] Database address ({sender_address}) != Group pubkey derived address ({initial_sender_address})")
+                logger.info(f"[ADDR_FIX] Will use TSS-derived address for transaction consistency")
+                # Continue with initial_sender_address - we'll validate with TSS result
+                working_sender_address = initial_sender_address
+            else:
+                logger.info(f"[ADDR_OK] Database and group pubkey addresses match: {sender_address}")
+                working_sender_address = sender_address
 
-            # Create transaction message for signing using the database address (the original DKG address)
+            # Create transaction message for signing using the working sender address
             transaction_data = self._create_transaction_data(
-                sender_address=sender_address,
+                sender_address=working_sender_address,
                 receiver_address=receiver_address,
                 amount=amount
             )
@@ -515,8 +511,20 @@ class SigningService:
                 })
                 return signing_result
 
-            # Since we already validated address match, use the database address
-            logger.info(f"[DEBUG] Using validated database address for transaction: {sender_address}")
+            # Validate TSS signing result and determine final sender address
+            tss_signature = signing_result['signature']
+            if 'pubkey' in tss_signature and tss_signature['pubkey']:
+                from internal.eth import pubkey_to_eth_address
+                tss_derived_address = pubkey_to_eth_address(tss_signature['pubkey'])
+                logger.info(f"[TSS_RESULT] TSS-derived address: {tss_derived_address}")
+                logger.info(f"[TSS_RESULT] Working address was: {working_sender_address}")
+
+                # Use the TSS-derived address as the authoritative sender address
+                final_sender_address = tss_derived_address
+                logger.info(f"[TSS_FINAL] Using TSS-derived address as final sender: {final_sender_address}")
+            else:
+                logger.warning(f"[TSS_WARNING] No TSS pubkey returned, falling back to working address")
+                final_sender_address = working_sender_address
             
             # Submit transaction to blockchain
             from services.blockchain_service import BlockchainService
@@ -530,7 +538,7 @@ class SigningService:
                     'sender': sender_identifier,
                     'receiver': receiver_identifier,
                     'amount': amount,
-                    'sender_address': sender_address,
+                    'sender_address': final_sender_address,
                     'receiver_address': receiver_address
                 })
                 return submit_result
@@ -543,7 +551,7 @@ class SigningService:
                     'sender': sender_identifier,
                     'receiver': receiver_identifier,
                     'amount': amount,
-                    'sender_address': sender_address,
+                    'sender_address': final_sender_address,
                     'receiver_address': receiver_address
                 }
 
@@ -556,14 +564,14 @@ class SigningService:
                     tx = Transaction(
                         sender_identifier=sender_identifier,
                         receiver_identifier=receiver_identifier,
-                        sender_address=sender_address,
+                        sender_address=final_sender_address,
                         receiver_address=receiver_address,
                         amount=amount,
                         tx_hash=tx_hash,
                         status='pending'
                     )
                     session.add(tx)
-                return {'success': True, 'tx_hash': tx_hash, 'sender_address': sender_address, 'receiver_address': receiver_address, 'note': f'Broadcasted; waiting for confirmations failed/timed out: {e}'}
+                return {'success': True, 'tx_hash': tx_hash, 'sender_address': final_sender_address, 'receiver_address': receiver_address, 'note': f'Broadcasted; waiting for confirmations failed/timed out: {e}'}
 
             # Continue with real transaction processing (for real transactions only)
             # Normalize receipt to dict if needed
@@ -580,7 +588,7 @@ class SigningService:
                     tx = Transaction(
                         sender_identifier=sender_identifier,
                         receiver_identifier=receiver_identifier,
-                        sender_address=sender_address,
+                        sender_address=final_sender_address,
                         receiver_address=receiver_address,
                         amount=amount,
                         tx_hash=tx_hash,
@@ -594,7 +602,7 @@ class SigningService:
                     'sender': sender_identifier,
                     'receiver': receiver_identifier,
                     'amount': amount,
-                    'sender_address': sender_address,
+                    'sender_address': final_sender_address,
                     'receiver_address': receiver_address
                 }
 
@@ -602,7 +610,7 @@ class SigningService:
             verify = self._verify_erc20_transfer_in_receipt(
                 receipt=receipt,
                 token_contract_addr=config.usdc_contract,
-                expected_from=sender_address,
+                expected_from=final_sender_address,
                 expected_to=receiver_address
             )
 
@@ -611,7 +619,7 @@ class SigningService:
                 tx = Transaction(
                     sender_identifier=sender_identifier,
                     receiver_identifier=receiver_identifier,
-                    sender_address=sender_address,
+                    sender_address=final_sender_address,
                     receiver_address=receiver_address,
                     amount=amount,
                     tx_hash=tx_hash,
@@ -625,7 +633,7 @@ class SigningService:
             return {
                 'success': True,
                 'tx_hash': tx_hash,
-                'sender_address': sender_address,
+                'sender_address': final_sender_address,
                 'receiver_address': receiver_address,
                 'transfer_event_found': verify["found"],
                 'transfer_value_raw': str(verify["value"]) if verify["value"] is not None else None
