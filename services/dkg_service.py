@@ -246,71 +246,56 @@ class DKGService:
             # Our final share is the sum of shares from all participants
             final_share = sum(data['share_for_us'] for data in all_participant_data.values()) % N
 
-            # Derive group public key from actual secret constant terms (FIXED)
-            group_secret_exponent = 0
+            # Collect verification keys (needed for validation)
             verification_keys = {}
-
             for pid, data in all_participant_data.items():
                 verification_key = bytes.fromhex(data['commitment']['verification_key'])
                 verification_keys[pid] = verification_key
 
-                # Get the actual constant term contribution from each participant
-                if pid == self.participant_id:
-                    # We have our own secret coefficients
-                    our_participant = self._get_dkg_participant(session_id)
-                    if our_participant and our_participant.secret_coefficients:
-                        constant_term = our_participant.secret_coefficients[0]  # a_0 coefficient
-                        group_secret_exponent = (group_secret_exponent + constant_term) % N
-                        logger.info(f"Added our constant term ({pid}): {hex(constant_term)}")
-                    else:
-                        logger.error(f"Missing our secret coefficients for participant {pid}")
-                else:
-                    # For other participants, we need to reconstruct their constant term
-                    # from the share they generated for evaluation at x=0
-                    # Since we can't access their secret coefficients directly,
-                    # we'll use a different approach: derive from their verification key
-                    # which represents g^{a_0} where a_0 is their constant term
-
-                    # WORKAROUND: Use the fact that verification_key = g^{a_0}
-                    # We need to extract a_0 from g^{a_0}, but this is computationally hard
-                    # Instead, we'll use the deterministic nature of our RNG
-
-                    # Regenerate their secret using the same deterministic seed they would use
-                    from internal.dkg import create_secure_dkg_participant
-                    from internal.security import FixedRNG
-
-                    # Use same seed generation logic as in _generate_initiator_dkg_data
-                    their_seed = hash(f"{identifier}-{pid}") % (2**32)
-                    their_rng = FixedRNG(their_seed)
-
-                    # Create temporary participant to get their constant term
-                    temp_participant = create_secure_dkg_participant(
-                        pid, threshold, len(participant_ids), their_rng
-                    )
-                    their_constant_term = temp_participant.secret_coefficients[0]
-                    group_secret_exponent = (group_secret_exponent + their_constant_term) % N
-                    logger.info(f"Added participant {pid} constant term: {hex(their_constant_term)}")
-
-            group_public_key = priv_to_pub_uncompressed(group_secret_exponent)
-            logger.info(f"Computed group public key: {group_public_key.hex()}")
-            # Calculate all participants' final shares for central storage
-            all_final_shares = {}
+            # MATHEMATICAL FIX: Use Lagrange interpolation (same as TSS) for consistency
+            # First, calculate all final shares (what TSS will use)
+            temp_final_shares = {}
             for pid in all_participant_data.keys():
-                # Each participant's final share is sum of shares they received from all participants
                 participant_final_share = 0
                 for sender_pid, data in all_participant_data.items():
-                    # Get share that sender_pid generated for pid
                     if sender_pid == self.participant_id:
-                        # We know our own generated shares
-                        our_shares = self._dkg_sessions.get(session_id, {}).get('generated_shares', {})
-                        participant_final_share = (participant_final_share + our_shares.get(pid, 0)) % N
+                        # Use our generated share for this participant
+                        our_generated_shares = self._dkg_sessions.get(session_id, {}).get('generated_shares', {})
+                        share_for_pid = our_generated_shares.get(pid, 0)
                     else:
-                        logger.info(f"Collecting share from {sender_pid} for {pid}")
-                        # Collect the REAL share that sender_pid generated for pid
-                        real_share = self._get_share_from_participant(session_id, sender_pid, pid)
-                        participant_final_share = (participant_final_share + real_share) % N
+                        # Get the share that sender_pid generated for pid
+                        share_for_pid = self._get_share_from_participant(session_id, sender_pid, pid)
+                    participant_final_share = (participant_final_share + share_for_pid) % N
+                temp_final_shares[pid] = participant_final_share
 
-                all_final_shares[pid] = participant_final_share
+            # Use Lagrange interpolation at x=0 (exactly like TSS)
+            threshold_participants = sorted(temp_final_shares.keys())[:threshold]
+            logger.info(f"Using Lagrange interpolation with participants: {threshold_participants}")
+
+            group_secret_exponent = 0
+            for pid in threshold_participants:
+                # Compute Lagrange coefficient for interpolation at x=0
+                lambda_coeff = 1
+                for j in threshold_participants:
+                    if j != pid:
+                        # lambda_i = prod((0 - x_j) / (x_i - x_j)) mod N
+                        numerator = (-j) % N
+                        denominator = (pid - j) % N
+                        denominator_inv = pow(denominator, -1, N)
+                        lambda_coeff = (lambda_coeff * numerator * denominator_inv) % N
+
+                # Add this participant's Lagrange contribution
+                share_contribution = (lambda_coeff * temp_final_shares[pid]) % N
+                group_secret_exponent = (group_secret_exponent + share_contribution) % N
+                logger.info(f"Participant {pid}: Lambda={hex(lambda_coeff)[:16]}..., Share={hex(temp_final_shares[pid])[:16]}..., Contribution={hex(share_contribution)[:16]}...")
+
+            group_public_key = priv_to_pub_uncompressed(group_secret_exponent)
+            logger.info(f"Computed group public key using Lagrange interpolation: {group_public_key.hex()}")
+
+            # Use the already computed final shares (same calculation as above)
+            all_final_shares = temp_final_shares
+            for pid, share in all_final_shares.items():
+                logger.info(f"Final threshold share for participant {pid}: {hex(share)}")
 
             logger.info(f"DKG completed: final_share computed, group_pubkey derived")
 
