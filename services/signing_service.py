@@ -384,12 +384,14 @@ class SigningService:
                 sender_address = sender_user.ethereum_address
 
             # Check if receiver exists, if not create via DKG (outside session to avoid isolation issues)
-            receiver_user = None
+            receiver_address = None
             logger.info(f"Checking if receiver {receiver_identifier} exists")
             with db_session() as session:
                 receiver_user = session.query(User).filter_by(identifier=receiver_identifier).first()
+                if receiver_user:
+                    receiver_address = receiver_user.ethereum_address
 
-            if not receiver_user:
+            if not receiver_address:
                 logger.info(f"Receiver {receiver_identifier} not found, creating via DKG")
 
                 # Auto-create receiver through DKG
@@ -412,7 +414,7 @@ class SigningService:
 
                 # Note: Receiver addresses are now only funded when they attempt transactions and balance is below 0.0001 ETH
 
-                # Query for receiver_user again in a fresh session after DKG creation
+                # Verify receiver was created successfully in database
                 with db_session() as session:
                     receiver_user = session.query(User).filter_by(identifier=receiver_identifier).first()
                     if not receiver_user:
@@ -425,8 +427,6 @@ class SigningService:
                             'sender_address': sender_address
                         }
                     receiver_address = receiver_user.ethereum_address
-            else:
-                receiver_address = receiver_user.ethereum_address
             
             logger.info(f"Executing transaction: {sender_identifier} -> {receiver_identifier}, amount: {amount}")
 
