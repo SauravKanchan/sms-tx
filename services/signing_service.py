@@ -449,6 +449,7 @@ class SigningService:
             # Get threshold shares from database
             shares_result = self._get_stored_threshold_shares(sender_identifier)
             if not shares_result['success']:
+                logger.info(f"[DEBUG] Failed to retrieve threshold shares for {sender_identifier}")
                 shares_result.update({
                     'sender': sender_identifier,
                     'receiver': receiver_identifier,
@@ -457,6 +458,8 @@ class SigningService:
                     'receiver_address': receiver_address
                 })
                 return shares_result
+            else:
+                logger.info(f"[DEBUG] Successfully retrieved threshold shares for {sender_identifier}. Total number of shares: {len(shares_result['shares'])}")
             
             threshold_shares = shares_result['shares']
             group_pubkey = shares_result['group_pubkey']
@@ -517,6 +520,8 @@ class SigningService:
                 })
                 return transaction_data
             message = transaction_data['message']
+
+            logger.info(f"Total threshold shares {len(threshold_shares)}, group pubkey: {group_pubkey.hex()[:20]}")
             
             # Coordinate threshold signing
             signing_result = self._coordinate_threshold_signing(
@@ -709,11 +714,32 @@ class SigningService:
                 if not user:
                     return {'success': False, 'error': f'User not found: {identifier}'}
 
-                # Get the completed DKG session for this user
-                dkg_session = session.query(DKGSession).filter_by(
+                # Find the DKG session whose group public key derives to the user's address
+                # This ensures TSS uses the correct group public key
+                dkg_session = None
+                all_sessions = session.query(DKGSession).filter_by(
                     user_identifier=identifier,
                     status='completed'
-                ).order_by(DKGSession.created_at.desc()).first()
+                ).order_by(DKGSession.created_at.asc()).all()
+
+                from internal.eth import pubkey_to_eth_address
+                for session_candidate in all_sessions:
+                    if session_candidate.group_public_key:
+                        try:
+                            group_pubkey = bytes.fromhex(session_candidate.group_public_key)
+                            derived_address = pubkey_to_eth_address(group_pubkey)
+                            if derived_address.lower() == user.ethereum_address.lower():
+                                dkg_session = session_candidate
+                                logger.info(f"Found matching DKG session for {identifier}: {session_candidate.session_id}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"Failed to check DKG session {session_candidate.session_id}: {e}")
+                            continue
+
+                # Fallback to most recent if no matching session found
+                if not dkg_session and all_sessions:
+                    dkg_session = all_sessions[-1]
+                    logger.warning(f"No DKG session with matching derived address for {identifier}, using most recent")
 
                 if not dkg_session:
                     return {'success': False, 'error': f'No completed DKG session found for user {identifier}'}
