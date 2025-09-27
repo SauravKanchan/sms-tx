@@ -1,0 +1,25 @@
+{
+  "servers": [
+    { "id": 1, "host": "localhost", "port": 8001, "api_port": 3001 },
+    { "id": 2, "host": "localhost", "port": 8002, "api_port": 3002 },
+    { "id": 3, "host": "localhost", "port": 8003, "api_port": 3003 }
+  ],
+  "database": {
+    "path": "./data/mpc_signatures.db"
+  },
+  "blockchain": {
+    "rpc_url": "https://arb-sepolia.g.alchemy.com/v2/Y3VlE4BzShP8zUVeSwTLQ2U1fPsg0KVA",
+    "chain_id": 421614,
+    "usdc_contract": "0xdb0FC448c36880f2c5e0E2a245FEA72a25080b93",
+    "_faucet_private_key_note": "Set FAUCET_PRIVATE_KEY environment variable instead of storing here",
+    "faucet_amount_eth": "0.01"
+  },
+  "threshold": {
+    "required": 2,
+    "total": 3
+  },
+  "mpc": {
+    "timeout_seconds": 30,
+    "retry_count": 3
+  }
+}
