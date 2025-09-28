@@ -13,8 +13,9 @@ export class SMSReceiver {
   private isListening = false;
   private onMessageReceived?: (message: SMSMessage) => void;
   private smsListener?: any;
-  private lastProcessedId = '';
+  private lastProcessedTimestamps = new Map<string, number>(); // sender -> timestamp
   private pollingInterval?: NodeJS.Timeout;
+  private cleanupInterval?: NodeJS.Timeout;
 
   async initialize(): Promise<boolean> {
     try {
@@ -140,6 +141,9 @@ export class SMSReceiver {
         // Start listening for incoming SMS messages using polling approach
         this.startSMSPolling();
 
+        // Start cleanup interval for old timestamps (every 30 minutes)
+        this.startTimestampCleanup();
+
         debugLogger.success('SMS_RECEIVE', 'SMS polling started successfully');
         console.log('SMS polling started successfully');
         Alert.alert(
@@ -177,31 +181,48 @@ export class SMSReceiver {
           try {
             const messages = JSON.parse(smsList);
 
-            // Process new messages (check for messages newer than last processed)
+            // Process new messages using timestamp-based deduplication
             for (const sms of messages) {
-              if (sms._id && sms._id !== this.lastProcessedId && this.onMessageReceived) {
-                // Check if this is a recent message (within last 30 seconds)
+              if (sms._id && sms.address && this.onMessageReceived) {
                 const messageTime = parseInt(sms.date);
+                const senderAddress = sms.address;
                 const now = Date.now();
                 const timeDiff = now - messageTime;
 
-                if (timeDiff < 30000) { // 30 seconds
-                  const message: SMSMessage = {
-                    address: sms.address || 'Unknown',
-                    body: sms.body || '',
-                    date: new Date(messageTime).toISOString(),
-                    type: 'received'
-                  };
+                // Check if this is a recent message (within last 10 seconds)
+                if (timeDiff < 10000) { // Reduced from 30 to 10 seconds
+                  // Check if we've already processed a message from this sender at this time or later
+                  const lastProcessedTime = this.lastProcessedTimestamps.get(senderAddress) || 0;
 
-                  debugLogger.success('SMS_RECEIVE', 'New SMS detected', {
-                    from: message.address,
-                    message: message.body,
-                    id: sms._id
-                  });
+                  if (messageTime > lastProcessedTime) {
+                    const message: SMSMessage = {
+                      address: senderAddress,
+                      body: sms.body || '',
+                      date: new Date(messageTime).toISOString(),
+                      type: 'received'
+                    };
 
-                  this.lastProcessedId = sms._id;
-                  this.onMessageReceived(message);
-                  break; // Process only the newest message
+                    debugLogger.success('SMS_RECEIVE', 'New SMS detected via timestamp', {
+                      from: message.address,
+                      message: message.body,
+                      messageTime: messageTime,
+                      lastProcessedTime: lastProcessedTime,
+                      timeDiff: timeDiff
+                    });
+
+                    // Update timestamp for this sender
+                    this.lastProcessedTimestamps.set(senderAddress, messageTime);
+                    this.onMessageReceived(message);
+
+                    // Process only one message per polling cycle
+                    break;
+                  } else {
+                    debugLogger.info('SMS_RECEIVE', 'Skipping already processed message', {
+                      from: senderAddress,
+                      messageTime: messageTime,
+                      lastProcessedTime: lastProcessedTime
+                    });
+                  }
                 }
               }
             }
@@ -223,14 +244,50 @@ export class SMSReceiver {
       this.pollingInterval = undefined;
       debugLogger.info('SMS_RECEIVE', 'SMS polling stopped');
       console.log('SMS polling stopped');
-    } else {
-      debugLogger.info('SMS_RECEIVE', 'SMS listener stopped');
-      console.log('SMS listener stopped');
     }
+
+    // Stop the cleanup interval
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = undefined;
+      debugLogger.info('SMS_RECEIVE', 'Timestamp cleanup stopped');
+    }
+
+    debugLogger.info('SMS_RECEIVE', 'SMS listener stopped');
+    console.log('SMS listener stopped');
   }
 
   isCurrentlyListening(): boolean {
     return this.isListening;
+  }
+
+  private startTimestampCleanup(): void {
+    // Clean up old timestamps every 30 minutes
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      const oneHourAgo = now - (60 * 60 * 1000); // 1 hour ago
+      let removedCount = 0;
+
+      // Remove timestamps older than 1 hour
+      const sendersToRemove: string[] = [];
+      this.lastProcessedTimestamps.forEach((timestamp, sender) => {
+        if (timestamp < oneHourAgo) {
+          sendersToRemove.push(sender);
+        }
+      });
+
+      sendersToRemove.forEach(sender => {
+        this.lastProcessedTimestamps.delete(sender);
+        removedCount++;
+      });
+
+      if (removedCount > 0) {
+        debugLogger.info('SMS_RECEIVE', 'Cleaned up old timestamps', {
+          removedCount,
+          remainingCount: this.lastProcessedTimestamps.size
+        });
+      }
+    }, 30 * 60 * 1000); // Run every 30 minutes
   }
 }
 

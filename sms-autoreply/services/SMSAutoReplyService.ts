@@ -20,6 +20,7 @@ export class SMSAutoReplyService {
   };
 
   private onStatsUpdate?: (stats: AutoReplyStats) => void;
+  private processingRequests = new Set<string>(); // Track phone numbers currently being processed
 
   async start(onStatsUpdate?: (stats: AutoReplyStats) => void): Promise<boolean> {
     if (this.stats.isActive) {
@@ -63,6 +64,10 @@ export class SMSAutoReplyService {
 
     debugLogger.info('SYSTEM', 'Stopping SMS Auto-Reply service...');
     smsReceiver.stopListening();
+
+    // Clear any pending processing requests
+    this.processingRequests.clear();
+
     this.stats.isActive = false;
     this.updateStats();
 
@@ -71,10 +76,27 @@ export class SMSAutoReplyService {
   }
 
   private async handleIncomingSMS(message: SMSMessage): Promise<void> {
+    const senderPhone = message.address;
+
+    // Check if we're already processing a request from this sender
+    if (this.processingRequests.has(senderPhone)) {
+      debugLogger.warning('SYSTEM', 'Skipping duplicate request - already processing message from sender', {
+        from: senderPhone,
+        message: message.body,
+        timestamp: message.date
+      });
+      console.log(`Skipping duplicate request from ${senderPhone} - already processing`);
+      return;
+    }
+
+    // Mark this sender as being processed
+    this.processingRequests.add(senderPhone);
+
     debugLogger.info('SYSTEM', 'Processing incoming SMS for auto-reply', {
-      from: message.address,
+      from: senderPhone,
       message: message.body,
-      timestamp: message.date
+      timestamp: message.date,
+      currentlyProcessing: Array.from(this.processingRequests)
     });
     console.log('Processing incoming SMS:', message);
 
@@ -83,28 +105,35 @@ export class SMSAutoReplyService {
     this.updateStats();
 
     try {
-      const replyResult = await smsSender.sendAutoReply(message.address, message.body);
+      const replyResult = await smsSender.sendAutoReply(senderPhone, message.body);
 
       if (replyResult.success) {
         this.stats.messagesReplied++;
         this.stats.lastReply = 'Auto-reply sent successfully';
-        debugLogger.success('SYSTEM', `Auto-reply sent to ${message.address}`, {
+        debugLogger.success('SYSTEM', `Auto-reply sent to ${senderPhone}`, {
           replyMessage: replyResult.message
         });
-        console.log(`Auto-reply sent to ${message.address}`);
+        console.log(`Auto-reply sent to ${senderPhone}`);
       } else {
         this.stats.errors++;
         this.stats.lastReply = `Failed to send: ${replyResult.error}`;
-        debugLogger.error('SYSTEM', `Failed to send auto-reply to ${message.address}`, {
+        debugLogger.error('SYSTEM', `Failed to send auto-reply to ${senderPhone}`, {
           error: replyResult.error
         });
-        console.error(`Failed to send auto-reply to ${message.address}:`, replyResult.error);
+        console.error(`Failed to send auto-reply to ${senderPhone}:`, replyResult.error);
       }
     } catch (error) {
       this.stats.errors++;
       this.stats.lastReply = `Error: ${error}`;
       debugLogger.error('SYSTEM', 'Error processing auto-reply', error);
       console.error('Error processing auto-reply:', error);
+    } finally {
+      // Always remove the sender from processing set, regardless of success/failure
+      this.processingRequests.delete(senderPhone);
+      debugLogger.info('SYSTEM', 'Finished processing message', {
+        from: senderPhone,
+        remainingProcessing: Array.from(this.processingRequests)
+      });
     }
 
     this.updateStats();
